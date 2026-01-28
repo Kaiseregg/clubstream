@@ -1,0 +1,33 @@
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
+body{background:#0b1220;color:#e6eefc}
+a{color:#9bc1ff}
+
+.wrap{max-width:980px;margin:0 auto;padding:24px}
+.card{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10);border-radius:18px;padding:18px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.row{display:flex;gap:16px;flex-wrap:wrap}
+.col{flex:1;min-width:280px}
+
+.btn{cursor:pointer;border:1px solid rgba(255,255,255,.18);background:rgba(86,140,255,.18);color:#e6eefc;border-radius:12px;padding:10px 12px;font-weight:600}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+
+.input{width:100%;padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.14);background:rgba(0,0,0,.20);color:#e6eefc}
+.input:focus{outline:2px solid rgba(155,193,255,.35);outline-offset:2px}
+/* Windows sometimes renders dropdown options as white-on-light; force readable options */
+select.input option{color:#0b1220;background:#e6eefc}
+
+.badge{display:inline-block;padding:4px 10px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);font-size:12px}
+.video{width:100%;aspect-ratio:16/9;background:#000;border-radius:14px;overflow:hidden}
+.h{margin:0 0 8px 0}
+.muted{opacity:.75;font-size:13px}
+
+.matchbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0 12px 0;padding:10px 12px;border-radius:14px;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.10);backdrop-filter:blur(10px)}
+.matchbar .meta{display:flex;flex-direction:column;gap:2px;min-width:0}
+.matchbar .sport{font-size:12px;opacity:.85}
+.matchbar .teams{font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.matchbar .score{font-size:22px;font-weight:900;letter-spacing:1;flex:0 0 auto}
+
+
+.btnPrimary{background:#2d6cff;border-color:rgba(255,255,255,.18)}
+.btnPrimary:hover{filter:brightness(1.05)}
+textarea.input{min-height:80px;resize:vertical}
