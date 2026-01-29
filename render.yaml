@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: stream-live-signaling
+    env: node
+    plan: free
+    rootDir: signaling
+    buildCommand: npm ci
+    startCommand: node src/index.js
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 8787

@@ -18,8 +18,14 @@ export default function AdminRequest(){
       if(error) throw error;
       setOk(true);
     }catch(e2){
-      setErr(String(e2?.message||e2));
-    }
+      const msg = String(e2?.message||e2||'');
+      console.error(e2);
+      if (msg.toLowerCase().includes('could not find the table') || msg.toLowerCase().includes('admin_requests')) {
+        setErr("Anfrage-System ist noch nicht eingerichtet. Bitte Admin kontaktieren (Supabase Tabelle 'admin_requests' fehlt).");
+      } else {
+        setErr("Anfrage konnte nicht gesendet werden. Bitte erneut versuchen.");
+      }
+}
   }
 
   return (

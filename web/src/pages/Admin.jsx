@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { connectSignaling } from '../lib/signaling.js'
+import { supabase } from '../lib/supabase.js'
 
 function mkCode(){
   const a = Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,4)
@@ -20,6 +21,7 @@ export default function Admin(){
   const [sigOk, setSigOk] = useState(false)
   const [status, setStatus] = useState('idle') // idle | live
   const [err, setErr] = useState('')
+  const [facingMode, setFacingMode] = useState('environment')
 
   // Match / Score state (synced to viewers)
   const sports = ['Unihockey','Fussball','Eishockey','Basketball','Volleyball','Handball','Tennis','Sonstiges']
@@ -49,11 +51,29 @@ export default function Admin(){
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function ensureMedia(){
-    if (streamRef.current) return streamRef.current
-    const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+  async function ensureMedia(force=false, preferredFacing=null){
+    if (streamRef.current && !force) return streamRef.current
+    try{ streamRef.current?.getTracks?.().forEach(t=>t.stop()) }catch{}
+    const fm = preferredFacing || facingMode
+    const s = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: fm },
+      audio: true
+    })
     streamRef.current = s
     if (localVideoRef.current) localVideoRef.current.srcObject = s
+
+    // If already streaming to viewers, swap tracks without breaking the connection.
+    try{
+      const vTrack = s.getVideoTracks?.()[0]
+      const aTrack = s.getAudioTracks?.()[0]
+      pcsRef.current.forEach((pc)=>{
+        pc.getSenders?.().forEach(sender=>{
+          if (sender?.track?.kind === 'video' && vTrack) sender.replaceTrack(vTrack)
+          if (sender?.track?.kind === 'audio' && aTrack) sender.replaceTrack(aTrack)
+        })
+      })
+    }catch{}
+
     return s
   }
 
@@ -109,7 +129,23 @@ export default function Admin(){
     sig.send({ type:'webrtc-offer', code, to: viewerId, sdp: pc.localDescription })
   }
 
-  const watchUrl = `${location.origin}/watch/${encodeURIComponent(code)}`
+  
+  async function switchCamera(){
+    const next = (facingMode === 'user') ? 'environment' : 'user'
+    setFacingMode(next)
+    try{
+      await ensureMedia(true, next)
+    }catch(e){
+      setErr(String(e?.message||e))
+    }
+  }
+
+  async function logout(){
+    try{ await supabase?.auth?.signOut?.() }catch{}
+    window.location.href = '/admin/login'
+  }
+
+const watchUrl = `${location.origin}/watch/${encodeURIComponent(code)}`
 
   return (
     <div className="row">
@@ -117,7 +153,10 @@ export default function Admin(){
         <div className="card">
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
             <h2 className="h">Admin • Live Stream</h2>
-            <span className="badge">Signaling: {sigOk ? 'ok' : 'offline'}</span>
+            <div style={{display:'flex',gap:10,alignItems:'center'}}>
+              <span className="badge">Signaling: {sigOk ? 'ok' : 'offline'}</span>
+              <button className="btn" onClick={logout} style={{padding:'8px 10px'}}>Abmelden</button>
+            </div>
           </div>
 
           <div className="muted">Code</div>
@@ -199,17 +238,6 @@ export default function Admin(){
           <div style={{height:10}} className="muted">
             Wenn das Video schwarz bleibt: Browser-Popup "Kamera erlauben" bestätigen.
           </div>
-        </div>
-      </div>
-
-      <div className="col">
-        <div className="card">
-          <h2 className="h">Tipps</h2>
-          <ul className="muted">
-            <li>Für Tests: Admin & Zuschauer in 2 Tabs öffnen.</li>
-            <li>Wenn Zuschauer schwarz: prüfe Console (F12) auf WebSocket/ICE Errors.</li>
-            <li>Für Mobile später TURN ergänzen: VITE_ICE_SERVERS_JSON.</li>
-          </ul>
         </div>
       </div>
     </div>

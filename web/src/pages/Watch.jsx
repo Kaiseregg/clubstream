@@ -13,7 +13,7 @@ function getIceServers(){
 export default function Watch(){
   const { code } = useParams()
   const [sigOk, setSigOk] = useState(false)
-  const [note, setNote] = useState('Warte auf Stream...')
+  const [note, setNote] = useState('')
   const [match, setMatch] = useState(null)
   const [muted, setMuted] = useState(true)
   const videoRef = useRef(null)
@@ -93,7 +93,23 @@ export default function Watch(){
     sig.send({ type:'webrtc-answer', code, to: hostId, sdp: pc.localDescription })
   }
 
-  return (
+  
+  async function handleVideoClick(){
+    // Unmute on first interaction (autoplay with audio is often blocked)
+    setMuted(false)
+    const v = videoRef.current
+    if(!v) return
+    const container = v.parentElement
+    try{
+      if (container?.requestFullscreen) {
+        await container.requestFullscreen()
+      } else if (v?.webkitEnterFullscreen) {
+        v.webkitEnterFullscreen()
+      }
+    }catch{}
+  }
+
+return (
     <div className="card">
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
         <h2 className="h">Live</h2>
@@ -103,17 +119,28 @@ export default function Watch(){
         Signaling: {sigOk ? 'ok' : 'offline'} • <Link to="/">← Zurück</Link>
       </div>
 
-      {match ? (
-        <div className="matchbar">
-          <div className="meta">
-            <div className="sport">{match.sport || 'Sport'}</div>
-            <div className="teams">{(match.teamA||'Team A')} vs {(match.teamB||'Team B')}</div>
-          </div>
-          <div className="score">{Number(match.scoreA||0)} : {Number(match.scoreB||0)}</div>
-        </div>
-      ) : null}
-
       <div className="video" style={{position:'relative'}}>
+
+        {match ? (
+          <div style={{
+            position:'absolute',top:10,left:10,right:10,
+            display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,
+            padding:'10px 12px',
+            background:'rgba(0,0,0,.45)',border:'1px solid rgba(255,255,255,.14)',
+            borderRadius:14,backdropFilter:'blur(6px)'
+          }}>
+            <div style={{minWidth:0}}>
+              <div style={{fontSize:12,opacity:.9}}>{match.sport || 'Sport'}</div>
+              <div style={{fontWeight:800,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
+                {(match.teamA||'Team A')} vs {(match.teamB||'Team B')}
+              </div>
+            </div>
+            <div style={{fontWeight:900,fontSize:18,flexShrink:0}}>
+              {Number(match.scoreA||0)} : {Number(match.scoreB||0)}
+            </div>
+          </div>
+        ) : null}
+
         {/* overlay removed; match is shown above the video for better readability */}
 
         <video
@@ -122,14 +149,8 @@ export default function Watch(){
           playsInline
           controls={false}
           muted={muted}
-          onClick={()=>setMuted(false)}
+          onClick={handleVideoClick}
           style={{width:'100%',height:'100%',objectFit:'cover'}} />
-        {note ? (
-          <div style={{
-            position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',
-            color:'#e6eefc',fontWeight:700,textShadow:'0 2px 18px rgba(0,0,0,.6)'
-          }}>{note}</div>
-        ) : null}
       </div>
       <div className="muted" style={{marginTop:10, display:'flex', justifyContent:'space-between', gap:12, alignItems:'center'}}>
         <span>Keine Wiederholung • nur live</span>
