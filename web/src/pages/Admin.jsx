@@ -183,6 +183,21 @@ export default function Admin({ role = 'streamer' }){
 
     local.getTracks().forEach(t=>pc.addTrack(t, local))
 
+    // Try to push a better upstream bitrate for video (browser will still adapt)
+    try {
+      const vSender = pc.getSenders().find(s => s.track?.kind === 'video')
+      if (vSender) {
+        const params = vSender.getParameters() || {}
+        const enc = (params.encodings && params.encodings[0]) ? params.encodings[0] : {}
+        params.encodings = [{ ...enc, maxBitrate: 2500000 }] // ~2.5 Mbps
+        await vSender.setParameters(params)
+      }
+      const vTrack = local.getVideoTracks?.()?.[0]
+      if (vTrack) vTrack.contentHint = 'motion'
+    } catch (e) {
+      // non-fatal
+    }
+
     pc.onicecandidate = (ev)=>{
       if (ev.candidate) sig.send({ type:'webrtc-ice', code, to: viewerId, candidate: ev.candidate })
     }

@@ -147,12 +147,18 @@ return (
 
         <video
           ref={videoRef}
+          className="videoEl"
           autoPlay
           playsInline
           controls={false}
           muted={muted}
           onClick={handleVideoClick}
-          style={{width:'100%',height:'100%',objectFit:'cover'}} />
+          style={{
+            width:'100%',
+            height:'100%',
+            background:'#000',
+            objectFit: theater ? 'contain' : 'cover'
+          }} />
       </div>
       <div className="muted" style={{marginTop:10, display:'flex', justifyContent:'space-between', gap:12, alignItems:'center'}}>
         <span>Keine Wiederholung • nur live</span>
