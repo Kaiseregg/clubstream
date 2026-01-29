@@ -176,7 +176,7 @@ const watchUrl = `${location.origin}/watch/${encodeURIComponent(code)}`
               <button className="btn" onClick={()=>sendMatch()} disabled={status!=='live'} style={{padding:'8px 10px'}}>Übernehmen</button>
             </div>
 
-            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop:12, alignItems:'end'}}>
+            <div className="grid2">
               <div>
                 <div className="muted">Sportart</div>
                 <select className="input" value={sport} onChange={e=>setSport(e.target.value)}>

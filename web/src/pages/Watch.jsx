@@ -16,10 +16,18 @@ export default function Watch(){
   const [note, setNote] = useState('')
   const [match, setMatch] = useState(null)
   const [muted, setMuted] = useState(true)
+  const [theater, setTheater] = useState(false)
   const videoRef = useRef(null)
   const pcRef = useRef(null)
   const sigRef = useRef(null)
   const iceServers = useMemo(()=>({ iceServers: getIceServers() }), [])
+
+  useEffect(()=>{
+    if(!theater) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return ()=>{ document.body.style.overflow = prev }
+  }, [theater])
 
   useEffect(()=>{
     const sig = connectSignaling(onSigMsg, (s)=>setSigOk(!!s.ok))
@@ -95,18 +103,8 @@ export default function Watch(){
 
   
   async function handleVideoClick(){
-    // Unmute on first interaction (autoplay with audio is often blocked)
     setMuted(false)
-    const v = videoRef.current
-    if(!v) return
-    const container = v.parentElement
-    try{
-      if (container?.requestFullscreen) {
-        await container.requestFullscreen()
-      } else if (v?.webkitEnterFullscreen) {
-        v.webkitEnterFullscreen()
-      }
-    }catch{}
+    setTheater(true)
   }
 
 return (
@@ -119,7 +117,11 @@ return (
         Signaling: {sigOk ? 'ok' : 'offline'} • <Link to="/">← Zurück</Link>
       </div>
 
-      <div className="video" style={{position:'relative'}}>
+      <div className={"video" + (theater ? " theaterOn" : "")} style={{position:'relative'}}>
+
+        {theater && (
+          <button className="theaterClose" onClick={()=>setTheater(false)}>×</button>
+        )}
 
         {match ? (
           <div style={{
