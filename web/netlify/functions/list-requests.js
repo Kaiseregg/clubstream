@@ -1,0 +1,44 @@
+const { createClient } = require('@supabase/supabase-js');
+
+function json(status, obj){
+  return { statusCode: status, headers: { 'Content-Type':'application/json' }, body: JSON.stringify(obj) };
+}
+
+function getEnv(){
+  const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if(!url) throw new Error('Missing SUPABASE URL env (VITE_SUPABASE_URL or SUPABASE_URL)');
+  if(!service) throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY in Netlify env');
+  return { url, service };
+}
+
+async function requireOwner(event){
+  const auth = event.headers.authorization || event.headers.Authorization || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  if(!token) throw new Error('Missing Authorization Bearer token');
+  const { url, service } = getEnv();
+  const admin = createClient(url, service, { auth: { persistSession:false } });
+  const { data: u, error: uErr } = await admin.auth.getUser(token);
+  if(uErr) throw uErr;
+  const userId = u?.user?.id;
+  if(!userId) throw new Error('Invalid token');
+  const { data: prof, error: pErr } = await admin.from('admin_profiles').select('role').eq('user_id', userId).maybeSingle();
+  if(pErr) throw pErr;
+  if((prof?.role||null) !== 'owner') throw new Error('Not allowed (owner only)');
+  return admin;
+}
+
+exports.handler = async (event) => {
+  try{
+    const admin = await requireOwner(event);
+    const { data, error } = await admin
+      .from('admin_requests')
+      .select('id,name,email,reason,status,created_at')
+      .eq('status','pending')
+      .order('created_at', { ascending:false });
+    if(error) throw error;
+    return json(200, { requests: data || [] });
+  }catch(e){
+    return json(400, { error: String(e?.message||e) });
+  }
+};

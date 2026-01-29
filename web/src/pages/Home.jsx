@@ -7,7 +7,7 @@ export default function Home(){
 
   function open(){
     const c = code.trim()
-    if (!c) return
+    if(!c) return
     nav('/watch/' + encodeURIComponent(c))
   }
 
@@ -22,16 +22,6 @@ export default function Home(){
           <input className="input" value={code} onChange={e=>setCode(e.target.value)} placeholder="z.B. SPIEL1" />
           <div style={{height:10}}/>
           <button className="btn" onClick={open}>Live öffnen</button>
-        </div>
-      </div>
-      <div className="col">
-        <div className="card">
-          <h2 className="h">Hinweis</h2>
-          <ul className="muted">
-            <li>Kein Replay: Stream ist nur live sichtbar.</li>
-            <li>Datensparsam: Kein Video wird gespeichert.</li>
-            <li>Für Mobile-Netze später TURN ergänzen.</li>
-          </ul>
         </div>
       </div>
     </div>

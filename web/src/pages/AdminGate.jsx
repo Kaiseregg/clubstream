@@ -1,25 +1,27 @@
 import React, { useEffect, useState } from "react";
-import { Navigate, Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import Admin from "./Admin.jsx";
 import { supabase } from "../lib/supabase.js";
 
 export default function AdminGate(){
-  const [state,setState]=useState({loading:true, session:null, allowed:false, error:null});
+  const [state,setState]=useState({loading:true, session:null, role:null, allowed:false, error:null});
+  const nav = useNavigate();
 
   useEffect(()=>{
     let alive=true;
     (async()=>{
       try{
         if(!supabase){
-          if(alive) setState({loading:false, session:null, allowed:false, error:"Supabase ENV fehlt"});
+          if(alive) setState({loading:false, session:null, role:null, allowed:false, error:"Supabase ENV fehlt"});
           return;
         }
         const { data: s1 } = await supabase.auth.getSession();
         const session = s1?.session || null;
         if(!session){
-          if(alive) setState({loading:false, session:null, allowed:false, error:null});
+          if(alive) setState({loading:false, session:null, role:null, allowed:false, error:null});
           return;
         }
+
         const { data, error } = await supabase
           .from("admin_profiles")
           .select("role")
@@ -27,29 +29,44 @@ export default function AdminGate(){
           .maybeSingle();
 
         if(error) throw error;
-        const allowed = !!data?.role;
-        if(alive) setState({loading:false, session, allowed, error:null});
+        const role = data?.role || null;
+        const allowed = role === "owner" || role === "streamer" || role === "admin"; // legacy: admin treated as streamer
+        if(alive) setState({loading:false, session, role, allowed, error:null});
       }catch(e){
-        if(alive) setState({loading:false, session:null, allowed:false, error: String(e?.message||e)});
+        if(alive) setState({loading:false, session:null, role:null, allowed:false, error:String(e?.message||e)});
       }
     })();
-    return ()=>{alive=false};
+    return ()=>{ alive=false; };
   },[]);
 
-  if(state.loading) return <div className="card">Lade Admin…</div>;
-  if(!state.session) return <Navigate to="/admin/login" replace />;
+  if(state.loading) return <div className="card">Lade...</div>;
+
+  if(!state.session){
+    return (
+      <div className="card">
+        <h2 style={{marginTop:0}}>Admin</h2>
+        <div className="muted">Bitte einloggen.</div>
+        <div style={{display:"flex",gap:10,marginTop:14,flexWrap:"wrap"}}>
+          <Link className="btn btnPrimary" to="/admin/login">Zum Login</Link>
+          <Link className="btn" to="/">Zur Zuschauer-Seite</Link>
+        </div>
+      </div>
+    );
+  }
+
   if(!state.allowed){
     return (
       <div className="card">
-        <h2 style={{marginTop:0}}>Kein Admin-Zugriff</h2>
-        <div className="muted">Dein Konto ist noch nicht freigeschaltet.</div>
+        <h2 style={{marginTop:0}}>Kein Zugriff</h2>
+        <div className="muted">Dein Account ist noch nicht als Streamer/Owner freigeschaltet.</div>
         <div style={{display:"flex",gap:10,marginTop:14,flexWrap:"wrap"}}>
-          <Link className="btn" to="/admin/request">Admin-Zugang anfragen</Link>
-          <button className="btn" onClick={()=>supabase.auth.signOut()}>Abmelden</button>
+          <Link className="btn" to="/admin/request">Zugang anfragen</Link>
+          <button className="btn" onClick={async()=>{ await supabase.auth.signOut(); nav('/admin/login',{replace:true}); }}>Abmelden</button>
         </div>
         {state.error && <div className="muted" style={{marginTop:10,color:"#ffb3b3"}}>{state.error}</div>}
       </div>
     );
   }
-  return <Admin/>;
+
+  return <Admin role={state.role || "streamer"} />;
 }

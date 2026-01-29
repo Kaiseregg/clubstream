@@ -16,12 +16,18 @@ function getIceServers(){
   return [{ urls: ['stun:stun.l.google.com:19302'] }]
 }
 
-export default function Admin(){
+export default function Admin({ role = 'streamer' }){
   const [code, setCode] = useState(mkCode())
   const [sigOk, setSigOk] = useState(false)
   const [status, setStatus] = useState('idle') // idle | live
   const [err, setErr] = useState('')
   const [facingMode, setFacingMode] = useState('environment')
+
+  // Owner: manage access requests (creates streamer accounts)
+  const isOwner = role === 'owner'
+  const [requests, setRequests] = useState([])
+  const [reqMsg, setReqMsg] = useState('')
+  const [reqErr, setReqErr] = useState('')
 
   // Match / Score state (synced to viewers)
   const sports = ['Unihockey','Fussball','Eishockey','Basketball','Volleyball','Handball','Tennis','Sonstiges']
@@ -50,13 +56,70 @@ export default function Admin(){
     return ()=>{ try{ sig.close?.() ?? sig.ws.close() }catch{} }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+  async function apiFetch(fnPath, { method='GET', body } = {}){
+    if(!supabase) throw new Error("Supabase nicht konfiguriert")
+    const { data } = await supabase.auth.getSession()
+    const token = data?.session?.access_token
+    const res = await fetch(fnPath, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { "Authorization": "Bearer " + token } : {})
+      },
+      body: body ? JSON.stringify(body) : undefined
+    })
+    const txt = await res.text()
+    let json = null
+    try{ json = txt ? JSON.parse(txt) : null }catch(_e){}
+    if(!res.ok){
+      throw new Error((json && (json.error||json.message)) || txt || ("HTTP "+res.status))
+    }
+    return json
+  }
+
+  useEffect(()=>{
+    if(!isOwner) return;
+    (async()=>{
+      try{
+        setReqErr(''); setReqMsg('')
+        const data = await apiFetch('/.netlify/functions/list-requests')
+        setRequests(data?.requests || [])
+      }catch(e){
+        setReqErr(String(e?.message||e))
+      }
+    })()
+  },[isOwner])
+
+  async function approveRequest(id){
+    try{
+      setReqErr(''); setReqMsg('')
+      const data = await apiFetch('/.netlify/functions/approve-request', { method:'POST', body:{ id } })
+      setReqMsg(`✅ Freigeschaltet: ${data.email} | Temp-Passwort: ${data.tempPassword}`)
+      const fresh = await apiFetch('/.netlify/functions/list-requests')
+      setRequests(fresh?.requests || [])
+    }catch(e){
+      setReqErr(String(e?.message||e))
+    }
+  }
+
+  async function denyRequest(id){
+    try{
+      setReqErr(''); setReqMsg('')
+      await apiFetch('/.netlify/functions/deny-request', { method:'POST', body:{ id } })
+      const fresh = await apiFetch('/.netlify/functions/list-requests')
+      setRequests(fresh?.requests || [])
+    }catch(e){
+      setReqErr(String(e?.message||e))
+    }
+  }
+
 
   async function ensureMedia(force=false, preferredFacing=null){
     if (streamRef.current && !force) return streamRef.current
     try{ streamRef.current?.getTracks?.().forEach(t=>t.stop()) }catch{}
     const fm = preferredFacing || facingMode
     const s = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: fm },
+      video: { facingMode: fm, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } },
       audio: true
     })
     streamRef.current = s
@@ -239,6 +302,37 @@ const watchUrl = `${location.origin}/watch/${encodeURIComponent(code)}`
             Wenn das Video schwarz bleibt: Browser-Popup "Kamera erlauben" bestätigen.
           </div>
         </div>
+
+        {isOwner && (
+          <div className="card" style={{marginTop:14}}>
+            <h2 className="h">Anfragen (Streamer freischalten)</h2>
+            <div className="muted">Hier kannst du Anträge prüfen und Streamer-Accounts automatisch erstellen.</div>
+
+            {reqErr && <div className="muted" style={{marginTop:10,color:"#ffb3b3"}}>{reqErr}</div>}
+            {reqMsg && <div className="muted" style={{marginTop:10,color:"#b7ffd5"}}>{reqMsg}</div>}
+
+            <div style={{height:10}}/>
+            {(!requests || requests.length===0) ? (
+              <div className="muted">Keine offenen Anfragen.</div>
+            ) : (
+              <div style={{display:"grid",gap:10}}>
+                {requests.map(r=>(
+                  <div key={r.id} style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",border:"1px solid rgba(255,255,255,.08)",borderRadius:12,padding:12}}>
+                    <div style={{minWidth:0}}>
+                      <div style={{fontWeight:700}}>{r.name || "—"}</div>
+                      <div className="muted" style={{wordBreak:"break-all"}}>{r.email}</div>
+                      {r.reason && <div className="muted" style={{marginTop:4}}>{r.reason}</div>}
+                    </div>
+                    <div style={{display:"flex",gap:8,flexShrink:0}}>
+                      <button className="btn btnPrimary" onClick={()=>approveRequest(r.id)}>Freigeben</button>
+                      <button className="btn" onClick={()=>denyRequest(r.id)}>Ablehnen</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
