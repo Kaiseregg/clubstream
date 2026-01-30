@@ -41,7 +41,7 @@ exports.handler = async (event) => {
     const id = body.id;
     if(!id) throw new Error('Missing id');
 
-    const { error } = await admin.from('admin_requests').update({ status:'denied' }).eq('id', id);
+    const { error } = await admin.from('admin_requests').update({ status:'rejected' }).eq('id', id);
     if(error) throw error;
     return json(200, { ok:true });
   }catch(e){
