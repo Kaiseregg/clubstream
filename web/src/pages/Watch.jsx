@@ -23,36 +23,87 @@ export default function Watch(){
   const pcRef = useRef(null)
   const iceServers = useMemo(()=>({ iceServers: getIceServers() }), [])
 
-  // Fullscreen + Scroll-Lock
+
+  const isIOS = useMemo(()=>{
+    const ua = navigator.userAgent || ''
+    const iOS = /iPad|iPhone|iPod/.test(ua)
+    const iPadOS = (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+    return iOS || iPadOS
+  },[])
+  // Fullscreen + "YouTube-Style" Theater (works on iOS too)
   useEffect(()=>{
     const video = videoRef.current
     const cont = containerRef.current
+    let scrollY = 0
+
+    const setVh = ()=>{
+      // iOS Safari: 100vh is unstable because of browser chrome
+      document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`)
+    }
 
     const exitFs = () => {
       const exit = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen
       try{ exit?.call(document) }catch{}
     }
 
+    const onFsChange = ()=>{
+      const fsEl = document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement
+      if (!fsEl && !isIOS) setTheater(false)
+    }
+
     if(!theater){
-      // exit fullscreen + restore scroll
       exitFs()
+      window.removeEventListener('resize', setVh)
+      document.removeEventListener('fullscreenchange', onFsChange)
+      document.removeEventListener('webkitfullscreenchange', onFsChange)
+      // restore scroll
+      const top = document.body.style.top
+      if (document.body.style.position === 'fixed'){
+        document.body.style.position = ''
+        document.body.style.top = ''
+        document.body.style.left = ''
+        document.body.style.right = ''
+        document.body.style.width = ''
+        if (top){
+          const y = Math.abs(parseInt(top,10) || 0)
+          window.scrollTo(0, y)
+        }
+      }
+      document.body.style.overflow = ''
       return
     }
 
-    const prevOverflow = document.body.style.overflow
+    // lock scroll without "jump"
+    scrollY = window.scrollY || 0
     document.body.style.overflow = 'hidden'
+    document.body.style.position = 'fixed'
+    document.body.style.top = `-${scrollY}px`
+    document.body.style.left = '0'
+    document.body.style.right = '0'
+    document.body.style.width = '100%'
 
-    // request fullscreen (desktop/android) or iOS video fullscreen
+    setVh()
+    window.addEventListener('resize', setVh)
+
+    // request real fullscreen when supported (desktop/android). iOS Safari: keep CSS theater.
     try{
-      const req = cont?.requestFullscreen || cont?.webkitRequestFullscreen || cont?.msRequestFullscreen
-      if(req) req.call(cont)
-      else if(video?.webkitEnterFullscreen) video.webkitEnterFullscreen()
+      if(!isIOS){
+        const req = cont?.requestFullscreen || cont?.webkitRequestFullscreen || cont?.msRequestFullscreen
+        req?.call(cont)
+        document.addEventListener('fullscreenchange', onFsChange)
+        document.addEventListener('webkitfullscreenchange', onFsChange)
+      }
     }catch{}
 
-    return ()=>{ document.body.style.overflow = prevOverflow }
-  },[theater])
+    // ensure playback continues
+    try{ video?.play?.() }catch{}
 
-  useEffect(()=>{
+    return ()=>{
+      window.removeEventListener('resize', setVh)
+      document.removeEventListener('fullscreenchange', onFsChange)
+      document.removeEventListener('webkitfullscreenchange', onFsChange)
+    }
+  },[theater, isIOS])useEffect(()=>{
     const sig = connectSignaling(onSigMsg, (s)=>setSigOk(!!s.ok))
     sigRef.current = sig
     sig.send({ type:'viewer-join', code })
