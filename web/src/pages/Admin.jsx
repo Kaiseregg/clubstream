@@ -24,7 +24,9 @@ export default function Admin({ role = 'streamer' }){
   const [facingMode, setFacingMode] = useState('environment')
 
   // Owner: manage access requests (creates streamer accounts)
-  const isOwner = role === 'owner'
+  // Wir erlauben hier zusätzlich role=admin, damit du nicht "blind" bist,
+  // falls in Supabase der role-Wert (noch) nicht auf owner steht.
+  const isOwner = role === 'owner' || role === 'admin'
   const [requests, setRequests] = useState([])
   const [reqMsg, setReqMsg] = useState('')
   const [reqErr, setReqErr] = useState('')

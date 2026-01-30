@@ -18,16 +18,39 @@ export default function Watch(){
   const [muted, setMuted] = useState(true)
   const [theater, setTheater] = useState(false)
   const videoRef = useRef(null)
-  const pcRef = useRef(null)
+  const containerRef = useRef(null)
   const sigRef = useRef(null)
+  const pcRef = useRef(null)
   const iceServers = useMemo(()=>({ iceServers: getIceServers() }), [])
 
+  // Fullscreen + Scroll-Lock
   useEffect(()=>{
-    if(!theater) return
-    const prev = document.body.style.overflow
+    const video = videoRef.current
+    const cont = containerRef.current
+
+    const exitFs = () => {
+      const exit = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen
+      try{ exit?.call(document) }catch{}
+    }
+
+    if(!theater){
+      // exit fullscreen + restore scroll
+      exitFs()
+      return
+    }
+
+    const prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    return ()=>{ document.body.style.overflow = prev }
-  }, [theater])
+
+    // request fullscreen (desktop/android) or iOS video fullscreen
+    try{
+      const req = cont?.requestFullscreen || cont?.webkitRequestFullscreen || cont?.msRequestFullscreen
+      if(req) req.call(cont)
+      else if(video?.webkitEnterFullscreen) video.webkitEnterFullscreen()
+    }catch{}
+
+    return ()=>{ document.body.style.overflow = prevOverflow }
+  },[theater])
 
   useEffect(()=>{
     const sig = connectSignaling(onSigMsg, (s)=>setSigOk(!!s.ok))

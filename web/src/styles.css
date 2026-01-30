@@ -45,14 +45,19 @@ textarea.input{min-height:80px;resize:vertical}
 .video.theaterOn{
   position:fixed;
   inset:0;
+  width:100vw;
+  height:100vh;
+  padding:0;
+  margin:0;
+  border-radius:0;
+  aspect-ratio:auto;
   z-index:9999;
   background:#000;
-  border-radius:0;
-  padding:14px;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  aspect-ratio:auto;
+}
+.video.theaterOn video{
+  width:100%;
+  height:100%;
+  object-fit:contain;
 }
 .video.theaterOn .videoEl{
   width:100%;
