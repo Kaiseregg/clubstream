@@ -19,7 +19,7 @@ function genPass(len=12){
   return out;
 }
 
-async function requireOwner(event){
+async function requireOwnerOrAdmin(event){
   const auth = event.headers.authorization || event.headers.Authorization || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
   if(!token) throw new Error('Missing Authorization Bearer token');
@@ -29,16 +29,21 @@ async function requireOwner(event){
   if(uErr) throw uErr;
   const userId = u?.user?.id;
   if(!userId) throw new Error('Invalid token');
-  const { data: prof, error: pErr } = await admin.from('admin_profiles').select('role').eq('user_id', userId).maybeSingle();
+  const { data: prof, error: pErr } = await admin
+    .from('admin_profiles')
+    .select('role')
+    .eq('user_id', userId)
+    .maybeSingle();
   if(pErr) throw pErr;
-  if((prof?.role||null) !== 'owner') throw new Error('Not allowed (owner only)');
+  const role = String(prof?.role||'').toLowerCase();
+  if(role !== 'owner' && role !== 'admin') throw new Error('Not allowed (owner only)');
   return admin;
 }
 
 exports.handler = async (event) => {
   try{
     if(event.httpMethod !== 'POST') return json(405,{error:'Method not allowed'});
-    const admin = await requireOwner(event);
+    const admin = await requireOwnerOrAdmin(event);
     const body = JSON.parse(event.body||'{}');
     const id = body.id;
     if(!id) throw new Error('Missing id');

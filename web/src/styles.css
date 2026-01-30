@@ -61,8 +61,8 @@ textarea.input{min-height:80px;resize:vertical}
 }
 .video.theaterOn .videoEl{
   width:100%;
-  height:auto;
-  aspect-ratio:16/9;
+  height:100%;
+  aspect-ratio:auto;
   object-fit:contain;
 }
 .theaterClose{

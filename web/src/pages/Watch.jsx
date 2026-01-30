@@ -140,7 +140,7 @@ return (
         Signaling: {sigOk ? 'ok' : 'offline'} • <Link to="/">← Zurück</Link>
       </div>
 
-      <div className={"video" + (theater ? " theaterOn" : "")} style={{position:'relative'}}>
+      <div ref={containerRef} className={"video" + (theater ? " theaterOn" : "")} style={{position:'relative'}}>
 
         {theater && (
           <button className="theaterClose" onClick={()=>setTheater(false)}>×</button>
