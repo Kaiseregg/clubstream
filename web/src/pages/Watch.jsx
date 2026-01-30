@@ -17,94 +17,62 @@ export default function Watch(){
   const [match, setMatch] = useState(null)
   const [muted, setMuted] = useState(true)
   const [theater, setTheater] = useState(false)
+  const [started, setStarted] = useState(false)
+  const [playing, setPlaying] = useState(false)
+  const isIOS = useMemo(() => {
+    if (typeof navigator === 'undefined') return false
+    return /iP(hone|ad|od)/.test(navigator.platform) || (navigator.userAgent.includes('Mac') && 'ontouchend' in document)
+  }, [])
   const videoRef = useRef(null)
   const containerRef = useRef(null)
   const sigRef = useRef(null)
   const pcRef = useRef(null)
   const iceServers = useMemo(()=>({ iceServers: getIceServers() }), [])
 
+  // iOS viewport height fix (100vh bug) + safe rotation
+  useEffect(()=>{
+    const setVh = ()=>{
+      const h = window.innerHeight || document.documentElement.clientHeight
+      document.documentElement.style.setProperty('--vh', `${h * 0.01}px`)
+    }
+    setVh()
+    window.addEventListener('resize', setVh)
+    window.addEventListener('orientationchange', setVh)
+    return ()=>{
+      window.removeEventListener('resize', setVh)
+      window.removeEventListener('orientationchange', setVh)
+    }
+  }, [])
 
-  const isIOS = useMemo(()=>{
-    const ua = navigator.userAgent || ''
-    const iOS = /iPad|iPhone|iPod/.test(ua)
-    const iPadOS = (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
-    return iOS || iPadOS
-  },[])
-  // Fullscreen + "YouTube-Style" Theater (works on iOS too)
+  // Fullscreen + Scroll-Lock
   useEffect(()=>{
     const video = videoRef.current
     const cont = containerRef.current
-    let scrollY = 0
-
-    const setVh = ()=>{
-      // iOS Safari: 100vh is unstable because of browser chrome
-      document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`)
-    }
 
     const exitFs = () => {
       const exit = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen
       try{ exit?.call(document) }catch{}
     }
 
-    const onFsChange = ()=>{
-      const fsEl = document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement
-      if (!fsEl && !isIOS) setTheater(false)
-    }
-
     if(!theater){
+      // exit fullscreen + restore scroll
       exitFs()
-      window.removeEventListener('resize', setVh)
-      document.removeEventListener('fullscreenchange', onFsChange)
-      document.removeEventListener('webkitfullscreenchange', onFsChange)
-      // restore scroll
-      const top = document.body.style.top
-      if (document.body.style.position === 'fixed'){
-        document.body.style.position = ''
-        document.body.style.top = ''
-        document.body.style.left = ''
-        document.body.style.right = ''
-        document.body.style.width = ''
-        if (top){
-          const y = Math.abs(parseInt(top,10) || 0)
-          window.scrollTo(0, y)
-        }
-      }
-      document.body.style.overflow = ''
       return
     }
 
-    // lock scroll without "jump"
-    scrollY = window.scrollY || 0
+    const prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    document.body.style.position = 'fixed'
-    document.body.style.top = `-${scrollY}px`
-    document.body.style.left = '0'
-    document.body.style.right = '0'
-    document.body.style.width = '100%'
 
-    setVh()
-    window.addEventListener('resize', setVh)
-
-    // request real fullscreen when supported (desktop/android). iOS Safari: keep CSS theater.
+    // request fullscreen (desktop/android) or iOS video fullscreen
     try{
-      if(!isIOS){
-        const req = cont?.requestFullscreen || cont?.webkitRequestFullscreen || cont?.msRequestFullscreen
-        req?.call(cont)
-        document.addEventListener('fullscreenchange', onFsChange)
-        document.addEventListener('webkitfullscreenchange', onFsChange)
-      }
+      const req = cont?.requestFullscreen || cont?.webkitRequestFullscreen || cont?.msRequestFullscreen
+      if(req) req.call(cont)
+      else if(video?.webkitEnterFullscreen) video.webkitEnterFullscreen()
     }catch{}
 
-    // ensure playback continues
-    try{ video?.play?.() }catch{}
+    return ()=>{ document.body.style.overflow = prevOverflow }
+  },[theater, isIOS])
 
-    return ()=>{
-      window.removeEventListener('resize', setVh)
-      document.removeEventListener('fullscreenchange', onFsChange)
-      document.removeEventListener('webkitfullscreenchange', onFsChange)
-    }
-  },[theater, isIOS]);
-  
   useEffect(()=>{
     const sig = connectSignaling(onSigMsg, (s)=>setSigOk(!!s.ok))
     sigRef.current = sig
@@ -154,17 +122,28 @@ export default function Watch(){
 
     pc.ontrack = (ev)=>{
       const [stream] = ev.streams
-      if (videoRef.current && stream){
-        videoRef.current.srcObject = stream
-        // Autoplay with audio is often blocked by browsers.
-        // We start muted and try to play; user can unmute.
-        videoRef.current.muted = muted
-        const p = videoRef.current.play?.()
-        if (p && typeof p.then === 'function') {
-          p.then(()=>setNote('')).catch(()=>setNote('Tippe ins Video, um abzuspielen (Autoplay blockiert).'))
-        } else {
-          setNote('')
+      const v = videoRef.current
+      if (v && stream){
+        v.srcObject = stream
+        v.muted = muted
+        v.playsInline = true
+        v.setAttribute('playsinline','')
+        v.setAttribute('webkit-playsinline','')
+
+        const tryPlay = async ()=>{
+          try{
+            const p = v.play?.()
+            if (p && typeof p.then === 'function') await p
+            setNote('')
+          }catch{
+            setNote('Tippe ins Video, um abzuspielen (Autoplay blockiert).')
+          }
         }
+
+        v.onplaying = ()=>setPlaying(true)
+        v.onpause = ()=>setPlaying(false)
+        v.onloadedmetadata = ()=>{ tryPlay() }
+        tryPlay()
       }
     }
     pc.onicecandidate = (ev)=>{
@@ -178,8 +157,34 @@ export default function Watch(){
   }
 
   
+  async function ensurePlay(userGesture=false){
+    const v = videoRef.current
+    if (!v) return
+    try{
+      // ensure attributes for iOS
+      v.playsInline = true
+      v.setAttribute('playsinline','')
+      v.setAttribute('webkit-playsinline','')
+      if (userGesture) setMuted(false)
+      v.muted = userGesture ? false : muted
+      const p = v.play?.()
+      if (p && typeof p.then === 'function') await p
+      setStarted(true)
+    }catch{
+      // ignore; user might need to tap
+    }
+  }
+
   async function handleVideoClick(){
-    setMuted(false)
+    // user gesture: start playback + enter theater
+    await ensurePlay(true)
+    setTheater(true)
+  }
+
+  async function handleFsButton(e){
+    e?.preventDefault?.()
+    e?.stopPropagation?.()
+    await ensurePlay(true)
     setTheater(true)
   }
 
@@ -220,6 +225,16 @@ return (
         ) : null}
 
         {/* overlay removed; match is shown above the video for better readability */}
+
+
+        {/* Play overlay (iOS often needs a user gesture) */}
+        {(!playing) && (
+          <button className="playOverlay" onClick={handleVideoClick}>
+            {started ? 'Weiter' : '▶ Start'}
+          </button>
+        )}
+
+        <button className="fsBtn" onClick={handleFsButton} title="Vollbild">⤢</button>
 
         <video
           ref={videoRef}
