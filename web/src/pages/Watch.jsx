@@ -103,7 +103,9 @@ export default function Watch(){
       document.removeEventListener('fullscreenchange', onFsChange)
       document.removeEventListener('webkitfullscreenchange', onFsChange)
     }
-  },[theater, isIOS])useEffect(()=>{
+  },[theater, isIOS]);
+  
+  useEffect(()=>{
     const sig = connectSignaling(onSigMsg, (s)=>setSigOk(!!s.ok))
     sigRef.current = sig
     sig.send({ type:'viewer-join', code })
