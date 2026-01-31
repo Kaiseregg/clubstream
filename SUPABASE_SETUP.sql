@@ -3,7 +3,7 @@
 
 create table if not exists public.admin_profiles (
   user_id uuid primary key references auth.users(id) on delete cascade,
-  role text not null check (role in ('superadmin','admin')),
+  role text not null check (role in ('owner','admin','streamer')),
   created_at timestamptz not null default now()
 );
 
@@ -12,7 +12,11 @@ create table if not exists public.admin_requests (
   name text not null,
   email text not null,
   reason text,
-  status text not null default 'pending' check (status in ('pending','approved','rejected')),
+  plan text,
+  payment_status text not null default 'unpaid' check (payment_status in ('unpaid','paid','waived')),
+  status text not null default 'pending' check (status in ('pending','approved','denied')),
+  approved_at timestamptz,
+  denied_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -47,3 +51,18 @@ create policy "no client read requests"
 on public.admin_requests for select
 to anon, authenticated
 using (false);
+
+--
+-- MIGRATION notes (if you already had old tables):
+-- 1) Fix status check (rejected -> denied) and add plan/payment columns.
+--
+-- alter table public.admin_requests drop constraint if exists admin_requests_status_check;
+-- alter table public.admin_requests add constraint admin_requests_status_check check (status in ('pending','approved','denied'));
+--
+-- alter table public.admin_requests add column if not exists plan text;
+-- alter table public.admin_requests add column if not exists payment_status text not null default 'unpaid';
+-- alter table public.admin_requests add column if not exists approved_at timestamptz;
+-- alter table public.admin_requests add column if not exists denied_at timestamptz;
+--
+-- alter table public.admin_profiles drop constraint if exists admin_profiles_role_check;
+-- alter table public.admin_profiles add constraint admin_profiles_role_check check (role in ('owner','admin','streamer'));

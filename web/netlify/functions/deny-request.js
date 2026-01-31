@@ -41,9 +41,38 @@ exports.handler = async (event) => {
     const id = body.id;
     if(!id) throw new Error('Missing id');
 
-    const { error } = await admin.from('admin_requests').update({ status:'denied' }).eq('id', id);
+    const { data: req, error: rErr } = await admin.from('admin_requests').select('*').eq('id', id).maybeSingle();
+    if(rErr) throw rErr;
+    if(!req) throw new Error('Request not found');
+
+    const { error } = await admin.from('admin_requests').update({ status:'denied', denied_at: new Date().toISOString() }).eq('id', id);
     if(error) throw error;
-    return json(200, { ok:true });
+    // Optional: send a denial email via SMTP (if you configure it later)
+    let emailSent = false;
+    try{
+      const host = process.env.SMTP_HOST;
+      const user = process.env.SMTP_USER;
+      const pass = process.env.SMTP_PASS;
+      const from = process.env.SMTP_FROM;
+      if(host && user && pass && from){
+        const nodemailer = require('nodemailer');
+        const tr = nodemailer.createTransport({
+          host,
+          port: Number(process.env.SMTP_PORT||587),
+          secure: String(process.env.SMTP_SECURE||'false') === 'true',
+          auth: { user, pass }
+        });
+        await tr.sendMail({
+          from,
+          to: req.email,
+          subject: 'ClubStream – Antrag abgelehnt',
+          text: `Hallo ${req.name||''}\n\nDein Streamer-Antrag wurde abgelehnt.\n\nWenn du denkst, dass das ein Fehler ist, bitte kontaktiere den Admin.\n\n— ClubStream`
+        });
+        emailSent = true;
+      }
+    }catch{}
+
+    return json(200, { ok:true, emailSent });
   }catch(e){
     return json(400, { error: String(e?.message||e) });
   }

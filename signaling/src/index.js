@@ -24,7 +24,10 @@ const wss = new WebSocketServer({ server });
  */
 
 const clients = new Map(); // ws -> {id}
-const rooms = new Map();   // code -> {hostId: string|null, viewers: Set<string>, match: object|null}
+const MAX_VIEWERS = Number(process.env.MAX_VIEWERS || 80);
+
+// code -> {hostId: string|null, viewers: Set<string>, match: object|null, paused: boolean}
+const rooms = new Map();
 
 function uid() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(2, 6);
@@ -42,18 +45,21 @@ function findWsById(id) {
 }
 
 function getRoom(code) {
-  if (!rooms.has(code)) rooms.set(code, { hostId: null, viewers: new Set(), match: null });
+  if (!rooms.has(code)) rooms.set(code, { hostId: null, viewers: new Set(), match: null, paused: false });
   return rooms.get(code);
 }
 
 function cleanupClient(id) {
   for (const [code, room] of rooms.entries()) {
     if (room.hostId === id) {
+      // Host disconnected: keep the room so viewers can auto-reconnect when host joins again.
+      room.hostId = null;
       for (const vid of room.viewers) {
         const vws = findWsById(vid);
-        if (vws) safeSend(vws, { type: 'ended', code, reason: 'host-left' });
+        if (vws) safeSend(vws, { type: 'ended', code, reason: 'host-left', canReconnect: true });
       }
-      rooms.delete(code);
+      // If nobody is watching, we can free the room.
+      if (room.viewers.size === 0) rooms.delete(code);
       continue;
     }
     if (room.viewers.has(id)) {
@@ -93,15 +99,29 @@ wss.on('connection', (ws) => {
       room.hostId = meta.id;
       safeSend(ws, { type: 'host-joined', code });
       for (const vid of room.viewers) safeSend(ws, { type: 'viewer-joined', code, viewerId: vid });
+
+      // notify viewers that host is available again (auto-reconnect)
+      for (const vid of room.viewers) {
+        const vws = findWsById(vid);
+        if (vws) {
+          safeSend(vws, { type: 'host-available', code });
+          if (room.match) safeSend(vws, { type: 'match-state', code, match: room.match, paused: room.paused });
+          safeSend(vws, { type: 'pause-state', code, paused: room.paused });
+        }
+      }
       return;
     }
 
     if (type === 'viewer-join') {
       if (!code) return safeSend(ws, { type: 'error', message: 'missing-code' });
       const room = getRoom(code);
+      if (!room.viewers.has(meta.id) && room.viewers.size >= MAX_VIEWERS) {
+        return safeSend(ws, { type: 'viewer-denied', code, reason: 'viewer-limit', max: MAX_VIEWERS });
+      }
       room.viewers.add(meta.id);
       safeSend(ws, { type: 'viewer-joined-ok', code, viewerId: meta.id, hostPresent: !!room.hostId });
-      if (room.match) safeSend(ws, { type: 'match-state', code, match: room.match });
+      if (room.match) safeSend(ws, { type: 'match-state', code, match: room.match, paused: room.paused });
+      safeSend(ws, { type: 'pause-state', code, paused: room.paused });
       const hws = room.hostId ? findWsById(room.hostId) : null;
       if (hws) safeSend(hws, { type: 'viewer-joined', code, viewerId: meta.id });
       return;
@@ -111,11 +131,26 @@ wss.on('connection', (ws) => {
       if (!code) return;
       const room = rooms.get(code);
       if (!room || room.hostId !== meta.id) return;
+      // Host explicitly stopped streaming: keep room for restart.
+      room.hostId = null;
       for (const vid of room.viewers) {
         const vws = findWsById(vid);
-        if (vws) safeSend(vws, { type: 'ended', code, reason: 'host-stopped' });
+        if (vws) safeSend(vws, { type: 'ended', code, reason: 'host-stopped', canReconnect: true });
       }
-      rooms.delete(code);
+      if (room.viewers.size === 0) rooms.delete(code);
+      return;
+    }
+
+    if (type === 'pause-set') {
+      if (!code) return safeSend(ws, { type: 'error', message: 'missing-code' });
+      const room = rooms.get(code);
+      if (!room || room.hostId !== meta.id) return safeSend(ws, { type: 'error', message: 'not-host', code });
+      room.paused = !!msg?.paused;
+      for (const vid of room.viewers) {
+        const vws = findWsById(vid);
+        if (vws) safeSend(vws, { type: 'pause-state', code, paused: room.paused });
+        if (room.match && vws) safeSend(vws, { type: 'match-state', code, match: room.match, paused: room.paused });
+      }
       return;
     }
 
@@ -127,7 +162,7 @@ wss.on('connection', (ws) => {
       room.match = msg?.match || null;
       for (const vid of room.viewers) {
         const vws = findWsById(vid);
-        if (vws) safeSend(vws, { type: 'match-state', code, match: room.match });
+        if (vws) safeSend(vws, { type: 'match-state', code, match: room.match, paused: room.paused });
       }
       return;
     }

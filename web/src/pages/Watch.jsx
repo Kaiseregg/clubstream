@@ -1,77 +1,58 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { connectSignaling } from '../lib/signaling.js'
-
-function getIceServers(){
-  try {
-    const raw = import.meta.env.VITE_ICE_SERVERS_JSON
-    if (raw) return JSON.parse(raw)
-  } catch {}
-  return [{ urls: ['stun:stun.l.google.com:19302'] }]
-}
+import { getIceConfig } from '../lib/ice.js'
 
 export default function Watch(){
   const { code } = useParams()
   const [sigOk, setSigOk] = useState(false)
   const [note, setNote] = useState('')
   const [match, setMatch] = useState(null)
+  const [paused, setPaused] = useState(false)
   const [muted, setMuted] = useState(true)
   const [theater, setTheater] = useState(false)
-  const [started, setStarted] = useState(false)
-  const [playing, setPlaying] = useState(false)
-  const isIOS = useMemo(() => {
-    if (typeof navigator === 'undefined') return false
-    return /iP(hone|ad|od)/.test(navigator.platform) || (navigator.userAgent.includes('Mac') && 'ontouchend' in document)
-  }, [])
+  const [playReady, setPlayReady] = useState(false)
   const videoRef = useRef(null)
   const containerRef = useRef(null)
   const sigRef = useRef(null)
   const pcRef = useRef(null)
-  const iceServers = useMemo(()=>({ iceServers: getIceServers() }), [])
 
-  // iOS viewport height fix (100vh bug) + safe rotation
-  useEffect(()=>{
-    const setVh = ()=>{
-      const h = window.innerHeight || document.documentElement.clientHeight
-      document.documentElement.style.setProperty('--vh', `${h * 0.01}px`)
-    }
-    setVh()
-    window.addEventListener('resize', setVh)
-    window.addEventListener('orientationchange', setVh)
-    return ()=>{
-      window.removeEventListener('resize', setVh)
-      window.removeEventListener('orientationchange', setVh)
-    }
-  }, [])
+  function isIOS(){
+    const ua = navigator.userAgent || ''
+    return /iPad|iPhone|iPod/.test(ua) && !window.MSStream
+  }
 
-  // Fullscreen + Scroll-Lock
-  useEffect(()=>{
+  async function requestFullscreen(){
     const video = videoRef.current
     const cont = containerRef.current
 
+    // iOS Safari: Fullscreen API is limited; use native fullscreen when possible.
+    if(isIOS() && video?.webkitEnterFullscreen){
+      try{ video.webkitEnterFullscreen() }catch{}
+      return
+    }
+
+    try{
+      const req = cont?.requestFullscreen || cont?.webkitRequestFullscreen || cont?.msRequestFullscreen
+      if(req) await req.call(cont)
+    }catch{}
+  }
+
+  // Scroll-Lock when in theater mode
+  useEffect(()=>{
     const exitFs = () => {
       const exit = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen
       try{ exit?.call(document) }catch{}
     }
 
     if(!theater){
-      // exit fullscreen + restore scroll
       exitFs()
       return
     }
-
     const prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-
-    // request fullscreen (desktop/android) or iOS video fullscreen
-    try{
-      const req = cont?.requestFullscreen || cont?.webkitRequestFullscreen || cont?.msRequestFullscreen
-      if(req) req.call(cont)
-      else if(video?.webkitEnterFullscreen) video.webkitEnterFullscreen()
-    }catch{}
-
     return ()=>{ document.body.style.overflow = prevOverflow }
-  },[theater, isIOS])
+  },[theater])
 
   useEffect(()=>{
     const sig = connectSignaling(onSigMsg, (s)=>setSigOk(!!s.ok))
@@ -93,9 +74,20 @@ export default function Watch(){
     }
     if (msg.type === 'match-state'){
       setMatch(msg.match || null)
+      if(typeof msg.paused === 'boolean') setPaused(!!msg.paused)
+    }
+    if (msg.type === 'pause-state'){
+      setPaused(!!msg.paused)
+    }
+    if (msg.type === 'viewer-denied'){
+      setNote(`Zuschauerlimit erreicht (max. ${msg.max || 80}).`)
+    }
+    if (msg.type === 'host-available'){
+      // Host came back, new offer will follow.
+      setNote('Stream wird wieder verbunden…')
     }
     if (msg.type === 'ended'){
-      setNote('Stream beendet.')
+      setNote(msg?.canReconnect ? 'Stream unterbrochen – warte auf Restart…' : 'Stream beendet.')
       try{ pcRef.current?.close() }catch{}
       pcRef.current = null
     }
@@ -106,7 +98,7 @@ export default function Watch(){
     if (!sig) return
     setNote('Verbinde...')
 
-    const pc = new RTCPeerConnection(iceServers)
+    const pc = new RTCPeerConnection(await getIceConfig())
     pcRef.current = pc
 
     pc.onconnectionstatechange = ()=>{
@@ -122,28 +114,18 @@ export default function Watch(){
 
     pc.ontrack = (ev)=>{
       const [stream] = ev.streams
-      const v = videoRef.current
-      if (v && stream){
-        v.srcObject = stream
-        v.muted = muted
-        v.playsInline = true
-        v.setAttribute('playsinline','')
-        v.setAttribute('webkit-playsinline','')
-
-        const tryPlay = async ()=>{
-          try{
-            const p = v.play?.()
-            if (p && typeof p.then === 'function') await p
-            setNote('')
-          }catch{
-            setNote('Tippe ins Video, um abzuspielen (Autoplay blockiert).')
-          }
+      if (videoRef.current && stream){
+        videoRef.current.srcObject = stream
+        // Autoplay with audio is often blocked by browsers.
+        // We start muted and try to play; user can unmute.
+        videoRef.current.muted = muted
+        const p = videoRef.current.play?.()
+        if (p && typeof p.then === 'function') {
+          p.then(()=>{ setNote(''); setPlayReady(true) }).catch(()=>{ setPlayReady(false); setNote('Tippe auf Play, um abzuspielen.') })
+        } else {
+          setNote('')
+          setPlayReady(true)
         }
-
-        v.onplaying = ()=>setPlaying(true)
-        v.onpause = ()=>setPlaying(false)
-        v.onloadedmetadata = ()=>{ tryPlay() }
-        tryPlay()
       }
     }
     pc.onicecandidate = (ev)=>{
@@ -157,35 +139,25 @@ export default function Watch(){
   }
 
   
-  async function ensurePlay(userGesture=false){
+  async function ensurePlayback(){
     const v = videoRef.current
-    if (!v) return
+    if(!v) return
     try{
-      // ensure attributes for iOS
-      v.playsInline = true
-      v.setAttribute('playsinline','')
-      v.setAttribute('webkit-playsinline','')
-      if (userGesture) setMuted(false)
-      v.muted = userGesture ? false : muted
-      const p = v.play?.()
-      if (p && typeof p.then === 'function') await p
-      setStarted(true)
+      v.muted = false
+      setMuted(false)
+      await v.play?.()
+      setPlayReady(true)
+      setNote('')
     }catch{
-      // ignore; user might need to tap
+      setPlayReady(false)
+      setNote('Tippe auf Play, um abzuspielen.')
     }
   }
 
-  async function handleVideoClick(){
-    // user gesture: start playback + enter theater
-    await ensurePlay(true)
+  async function handlePlay(){
+    await ensurePlayback()
     setTheater(true)
-  }
-
-  async function handleFsButton(e){
-    e?.preventDefault?.()
-    e?.stopPropagation?.()
-    await ensurePlay(true)
-    setTheater(true)
+    await requestFullscreen()
   }
 
 return (
@@ -200,9 +172,14 @@ return (
 
       <div ref={containerRef} className={"video" + (theater ? " theaterOn" : "")} style={{position:'relative'}}>
 
-        {theater && (
-          <button className="theaterClose" onClick={()=>setTheater(false)}>×</button>
-        )}
+        <div style={{position:'absolute',top:10,right:10,display:'flex',gap:8,zIndex:6}}>
+          {theater && (
+            <button className="theaterClose" onClick={()=>setTheater(false)} aria-label="Theater schliessen">×</button>
+          )}
+          <button className="fsBtn" onClick={handlePlay} aria-label="Fullscreen">
+            ⤢
+          </button>
+        </div>
 
         {match ? (
           <div style={{
@@ -218,23 +195,18 @@ return (
                 {(match.teamA||'Team A')} vs {(match.teamB||'Team B')}
               </div>
             </div>
-            <div style={{fontWeight:900,fontSize:18,flexShrink:0}}>
+            <div style={{textAlign:'right',flexShrink:0}}>
+              {match.periodsTotal ? (
+                <div style={{fontSize:12,opacity:.9,fontWeight:800}}>{Number(match.period||1)}/{Number(match.periodsTotal)}</div>
+              ) : null}
+              <div style={{fontWeight:900,fontSize:18}}>
               {Number(match.scoreA||0)} : {Number(match.scoreB||0)}
+              </div>
             </div>
           </div>
         ) : null}
 
         {/* overlay removed; match is shown above the video for better readability */}
-
-
-        {/* Play overlay (iOS often needs a user gesture) */}
-        {(!playing) && (
-          <button className="playOverlay" onClick={handleVideoClick}>
-            {started ? 'Weiter' : '▶ Start'}
-          </button>
-        )}
-
-        <button className="fsBtn" onClick={handleFsButton} title="Vollbild">⤢</button>
 
         <video
           ref={videoRef}
@@ -243,13 +215,30 @@ return (
           playsInline
           controls={false}
           muted={muted}
-          onClick={handleVideoClick}
+          onClick={handlePlay}
           style={{
             width:'100%',
             height:'100%',
             background:'#000',
             objectFit: theater ? 'contain' : 'cover'
           }} />
+
+        {/* Play overlay (iOS autoplay / permissions) */}
+        {(!playReady || note) && (
+          <div className="playOverlay" onClick={handlePlay}>
+            <div className="playOverlayInner">
+              <div className="playIcon">▶</div>
+              <div style={{fontWeight:800}}>Start</div>
+              <div style={{opacity:.8,fontSize:12,marginTop:6}}>{note || 'Tippe, um Video zu starten'}</div>
+            </div>
+          </div>
+        )}
+
+        {paused && (
+          <div className="pauseOverlay">
+            <div className="pauseOverlayInner">PAUSE</div>
+          </div>
+        )}
       </div>
       <div className="muted" style={{marginTop:10, display:'flex', justifyContent:'space-between', gap:12, alignItems:'center'}}>
         <span>Keine Wiederholung • nur live</span>

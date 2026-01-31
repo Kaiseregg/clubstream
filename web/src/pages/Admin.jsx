@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { connectSignaling } from '../lib/signaling.js'
+import { getIceConfig } from '../lib/ice.js'
 import { supabase } from '../lib/supabase.js'
 
 function mkCode(){
@@ -8,13 +9,7 @@ function mkCode(){
   return `${a}-${b}`
 }
 
-function getIceServers(){
-  try {
-    const raw = import.meta.env.VITE_ICE_SERVERS_JSON
-    if (raw) return JSON.parse(raw)
-  } catch {}
-  return [{ urls: ['stun:stun.l.google.com:19302'] }]
-}
+// Ice servers are fetched from /.netlify/functions/ice-servers (Cloudflare TURN when configured).
 
 export default function Admin({ role = 'streamer' }){
   const [code, setCode] = useState(mkCode())
@@ -38,19 +33,41 @@ export default function Admin({ role = 'streamer' }){
   const [teamB, setTeamB] = useState('Team B')
   const [scoreA, setScoreA] = useState(0)
   const [scoreB, setScoreB] = useState(0)
+  const [periodsTotal, setPeriodsTotal] = useState(3) // 2/3/4
+  const [period, setPeriod] = useState(1)
+  const [paused, setPaused] = useState(false)
+
+  const sportToPeriods = {
+    Fussball: 2,
+    Unihockey: 3,
+    Eishockey: 3,
+    Basketball: 4,
+  }
+
+  useEffect(()=>{
+    const p = sportToPeriods[sport] || 3
+    setPeriodsTotal(p)
+    setPeriod(1)
+  },[sport])
 
   function sendMatch(next){
     const sig = sigRef.current
     if (!sig) return
-    const match = next || { sport, teamA, teamB, scoreA, scoreB }
+    const match = next || { sport, teamA, teamB, scoreA, scoreB, periodsTotal, period }
     sig.send({ type:'match-update', code, match })
+  }
+
+  function sendPause(next){
+    const sig = sigRef.current
+    if (!sig) return
+    sig.send({ type:'pause-set', code, paused: !!next })
   }
 
   const localVideoRef = useRef(null)
   const streamRef = useRef(null)
   const sigRef = useRef(null)
   const pcsRef = useRef(new Map()) // viewerId -> RTCPeerConnection
-  const iceServers = useMemo(()=>({ iceServers: getIceServers() }), [])
+  const iceServers = useMemo(()=>({ iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }] }), [])
 
   useEffect(()=>{
     const sig = connectSignaling(onSigMsg, (s)=>setSigOk(!!s.ok))
@@ -96,7 +113,7 @@ export default function Admin({ role = 'streamer' }){
     try{
       setReqErr(''); setReqMsg('')
       const data = await apiFetch('/.netlify/functions/approve-request', { method:'POST', body:{ id } })
-      setReqMsg(`✅ Freigeschaltet: ${data.email} | Temp-Passwort: ${data.tempPassword}`)
+      setReqMsg(`✅ Freigeschaltet: ${data.email} • Invite/E-Mail: ${data.emailSent ? 'gesendet' : 'nicht gesendet (Email-Provider prüfen)'} `)
       const fresh = await apiFetch('/.netlify/functions/list-requests')
       setRequests(fresh?.requests || [])
     }catch(e){
@@ -164,12 +181,15 @@ export default function Admin({ role = 'streamer' }){
     setErr('')
     await ensureMedia()
     setStatus('live')
+    setPaused(false)
     sigRef.current?.send({ type:'host-join', code })
+    sendPause(false)
     sendMatch()
   }
 
   function stop(){
     setStatus('idle')
+    setPaused(false)
     sigRef.current?.send({ type:'host-stop', code })
     for (const pc of pcsRef.current.values()) { try{ pc.close() }catch{} }
     pcsRef.current.clear()
@@ -180,7 +200,7 @@ export default function Admin({ role = 'streamer' }){
     if (!sig) return
     const local = await ensureMedia()
 
-    const pc = new RTCPeerConnection(iceServers)
+    const pc = new RTCPeerConnection(await getIceConfig())
     pcsRef.current.set(viewerId, pc)
 
     local.getTracks().forEach(t=>pc.addTrack(t, local))
@@ -239,6 +259,46 @@ const watchUrl = `${location.origin}/watch/${encodeURIComponent(code)}`
             </div>
           </div>
 
+          <div style={{height:14}}/>
+          <div className="card" style={{padding:12, background:'rgba(255,255,255,0.03)'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+              <div className="muted" style={{fontWeight:700}}>Spielzeiten</div>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <select className="input" value={periodsTotal} onChange={e=>{
+                  const t = Number(e.target.value||3)
+                  setPeriodsTotal(t)
+                  setPeriod(1)
+                  if(status==='live') sendMatch({sport,teamA,teamB,scoreA,scoreB,periodsTotal:t,period:1})
+                }} style={{width:120}}>
+                  <option value={2}>2/2</option>
+                  <option value={3}>3/3</option>
+                  <option value={4}>4/4</option>
+                </select>
+
+                <button className="btn" disabled={status!=='live' || period<=1} onClick={()=>{
+                  const p = Math.max(1, period-1)
+                  setPeriod(p)
+                  sendMatch({sport,teamA,teamB,scoreA,scoreB,periodsTotal,period:p})
+                }}>←</button>
+                <span className="badge">{period}/{periodsTotal}</span>
+                <button className="btn" disabled={status!=='live' || period>=periodsTotal} onClick={()=>{
+                  const p = Math.min(periodsTotal, period+1)
+                  setPeriod(p)
+                  sendMatch({sport,teamA,teamB,scoreA,scoreB,periodsTotal,period:p})
+                }}>→</button>
+
+                <button className={"btn " + (paused ? 'btnPrimary' : '')} disabled={status!=='live'} onClick={()=>{
+                  const next = !paused
+                  setPaused(next)
+                  sendPause(next)
+                }}>{paused ? 'Pause: ON' : 'Pause'}</button>
+              </div>
+            </div>
+            <div className="muted" style={{marginTop:10}}>
+              Für Fussball standard 2/2, Unihockey/Eishockey 3/3, Basketball 4/4 (automatisch bei Sportart).
+            </div>
+          </div>
+
           <div className="muted">Code</div>
           <input className="input" value={code} onChange={e=>setCode(e.target.value.toUpperCase())} />
           <div style={{height:10}}/>
@@ -280,18 +340,18 @@ const watchUrl = `${location.origin}/watch/${encodeURIComponent(code)}`
               <div>
                 <div className="muted">Score A</div>
                 <div style={{display:'flex', gap:8, alignItems:'center'}}>
-                  <button className="btn" style={{minWidth:44}} onClick={()=>{ const v=Math.max(0,scoreA-1); setScoreA(v); sendMatch({sport,teamA,teamB,scoreA:v,scoreB}); }} disabled={status!=='live'}>-</button>
+                  <button className="btn" style={{minWidth:44}} onClick={()=>{ const v=Math.max(0,scoreA-1); setScoreA(v); sendMatch({sport,teamA,teamB,scoreA:v,scoreB,periodsTotal,period}); }} disabled={status!=='live'}>-</button>
                   <input className="input" value={scoreA} onChange={e=>{ const v=Math.max(0,parseInt(e.target.value||'0',10)||0); setScoreA(v); }} style={{textAlign:'center', width:90}} />
-                  <button className="btn" style={{minWidth:44}} onClick={()=>{ const v=scoreA+1; setScoreA(v); sendMatch({sport,teamA,teamB,scoreA:v,scoreB}); }} disabled={status!=='live'}>+</button>
+                  <button className="btn" style={{minWidth:44}} onClick={()=>{ const v=scoreA+1; setScoreA(v); sendMatch({sport,teamA,teamB,scoreA:v,scoreB,periodsTotal,period}); }} disabled={status!=='live'}>+</button>
                 </div>
               </div>
 
               <div>
                 <div className="muted">Score B</div>
                 <div style={{display:'flex', gap:8, alignItems:'center'}}>
-                  <button className="btn" style={{minWidth:44}} onClick={()=>{ const v=Math.max(0,scoreB-1); setScoreB(v); sendMatch({sport,teamA,teamB,scoreA,scoreB:v}); }} disabled={status!=='live'}>-</button>
+                  <button className="btn" style={{minWidth:44}} onClick={()=>{ const v=Math.max(0,scoreB-1); setScoreB(v); sendMatch({sport,teamA,teamB,scoreA,scoreB:v,periodsTotal,period}); }} disabled={status!=='live'}>-</button>
                   <input className="input" value={scoreB} onChange={e=>{ const v=Math.max(0,parseInt(e.target.value||'0',10)||0); setScoreB(v); }} style={{textAlign:'center', width:90}} />
-                  <button className="btn" style={{minWidth:44}} onClick={()=>{ const v=scoreB+1; setScoreB(v); sendMatch({sport,teamA,teamB,scoreA,scoreB:v}); }} disabled={status!=='live'}>+</button>
+                  <button className="btn" style={{minWidth:44}} onClick={()=>{ const v=scoreB+1; setScoreB(v); sendMatch({sport,teamA,teamB,scoreA,scoreB:v,periodsTotal,period}); }} disabled={status!=='live'}>+</button>
                 </div>
               </div>
             </div>
@@ -338,6 +398,10 @@ const watchUrl = `${location.origin}/watch/${encodeURIComponent(code)}`
                     <div style={{minWidth:0}}>
                       <div style={{fontWeight:700}}>{r.name || "—"}</div>
                       <div className="muted" style={{wordBreak:"break-all"}}>{r.email}</div>
+                      <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:6}}>
+                        {r.plan ? <span className="badge">Plan: {r.plan}</span> : null}
+                        {r.payment_status ? <span className="badge">Zahlung: {r.payment_status}</span> : null}
+                      </div>
                       {r.reason && <div className="muted" style={{marginTop:4}}>{r.reason}</div>}
                     </div>
                     <div style={{display:"flex",gap:8,flexShrink:0}}>

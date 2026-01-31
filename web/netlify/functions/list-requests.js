@@ -38,7 +38,7 @@ exports.handler = async (event) => {
     const admin = await requireOwnerOrAdmin(event);
     const { data, error } = await admin
       .from('admin_requests')
-      .select('id,name,email,reason,status,created_at')
+      .select('id,name,email,reason,plan,payment_status,status,created_at')
       .eq('status','pending')
       .order('created_at', { ascending:false });
     if(error) throw error;

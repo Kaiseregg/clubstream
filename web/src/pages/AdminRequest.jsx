@@ -6,6 +6,7 @@ export default function AdminRequest(){
   const [name,setName]=useState("");
   const [email,setEmail]=useState("");
   const [reason,setReason]=useState("");
+  const [plan,setPlan]=useState('single');
   const [ok,setOk]=useState(false);
   const [err,setErr]=useState("");
 
@@ -14,7 +15,7 @@ export default function AdminRequest(){
     setErr(""); setOk(false);
     try{
       if(!supabase) throw new Error("Supabase ENV fehlt (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)");
-      const { error } = await supabase.from("admin_requests").insert({ name, email, reason });
+      const { error } = await supabase.from("admin_requests").insert({ name, email, reason, plan, payment_status: 'unpaid' });
       if(error) throw error;
       setOk(true);
     }catch(e2){
@@ -46,10 +47,32 @@ export default function AdminRequest(){
           <div className="muted">Begründung</div>
           <textarea className="input" value={reason} onChange={e=>setReason(e.target.value)} rows={3} placeholder="z.B. Verein / Spielleiter / Kamera" />
         </label>
+        <label>
+          <div className="muted">Abo (für Streamer)</div>
+          <select className="input" value={plan} onChange={e=>setPlan(e.target.value)}>
+            <option value="single">Nur 1 Spiel • 5 CHF</option>
+            <option value="m6">Abo 6 Monate • 30 CHF</option>
+            <option value="y12">Abo 12 Monate • 50 CHF</option>
+          </select>
+        </label>
         <button className="btn btnPrimary" type="submit">Anfrage senden</button>
       </form>
 
-      {ok && <div className="muted" style={{marginTop:10,color:"#b8ffcc"}}>Anfrage gesendet ✅</div>}
+      {ok && (
+        <div className="card" style={{marginTop:12,background:'rgba(255,255,255,0.03)'}}>
+          <div style={{fontWeight:800}}>Anfrage gesendet ✅</div>
+          <div className="muted" style={{marginTop:6}}>
+            Optional: Bezahle per TWINT damit es schneller freigeschaltet wird.
+          </div>
+          <div style={{display:'flex',gap:10,alignItems:'center',marginTop:10,flexWrap:'wrap'}}>
+            <span className="badge">TWINT: 079 277 98 70</span>
+            <button className="btn" type="button" onClick={()=>navigator.clipboard?.writeText('0792779870')}>Nummer kopieren</button>
+          </div>
+          <div className="muted" style={{marginTop:8}}>
+            Vermerk in TWINT: deine E-Mail ({email})
+          </div>
+        </div>
+      )}
       {err && <div className="muted" style={{marginTop:10,color:"#ffb3b3"}}>{err}</div>}
 
       <div style={{display:"flex",gap:10,marginTop:14,flexWrap:"wrap"}}>

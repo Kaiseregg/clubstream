@@ -12,13 +12,6 @@ function getEnv(){
   return { url, service };
 }
 
-function genPass(len=12){
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%';
-  let out='';
-  for(let i=0;i<len;i++) out += chars[Math.floor(Math.random()*chars.length)];
-  return out;
-}
-
 async function requireOwnerOrAdmin(event){
   const auth = event.headers.authorization || event.headers.Authorization || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
@@ -56,26 +49,26 @@ exports.handler = async (event) => {
     const email = String(req.email||'').trim();
     if(!email || !email.includes('@')) throw new Error('Invalid email in request');
 
-    const tempPassword = genPass(12);
-
-    // create or get user
+    // Prefer Supabase invite flow: user sets their own password via email.
+    // This requires Email provider to be configured in Supabase.
     let userId = null;
-    const created = await admin.auth.admin.createUser({ email, password: tempPassword, email_confirm: true });
-    if(created.error){
-      // if user exists, reset password
-      if(String(created.error.message||'').toLowerCase().includes('already')){
-        const { data: lu, error: luErr } = await admin.auth.admin.listUsers({ page:1, perPage:1000 });
-        if(luErr) throw luErr;
-        const existing = (lu?.users||[]).find(u => (u.email||'').toLowerCase() === email.toLowerCase());
-        if(!existing) throw created.error;
-        userId = existing.id;
-        const { error: upErr } = await admin.auth.admin.updateUserById(userId, { password: tempPassword, email_confirm: true });
-        if(upErr) throw upErr;
-      }else{
-        throw created.error;
-      }
-    }else{
-      userId = created.data.user.id;
+    const invited = await admin.auth.admin.inviteUserByEmail(email, {
+      redirectTo: process.env.APP_INVITE_REDIRECT || undefined,
+    });
+    if(invited.error){
+      // If the user already exists, we still approve them and make sure role is streamer.
+      // Supabase will not send a new invite in this case.
+      const msg = String(invited.error.message||'');
+      if(!msg.toLowerCase().includes('already')) throw invited.error;
+
+      // Find existing user id
+      const { data: lu, error: luErr } = await admin.auth.admin.listUsers({ page:1, perPage:1000 });
+      if(luErr) throw luErr;
+      const existing = (lu?.users||[]).find(u => (u.email||'').toLowerCase() === email.toLowerCase());
+      if(!existing) throw invited.error;
+      userId = existing.id;
+    } else {
+      userId = invited.data.user.id;
     }
 
     // profile as streamer (NOT owner)
@@ -86,11 +79,11 @@ exports.handler = async (event) => {
 
     const { error: upReqErr } = await admin
       .from('admin_requests')
-      .update({ status:'approved' })
+      .update({ status:'approved', approved_at: new Date().toISOString() })
       .eq('id', id);
     if(upReqErr) throw upReqErr;
 
-    return json(200, { email, tempPassword });
+    return json(200, { email, emailSent: !invited.error });
   }catch(e){
     return json(400, { error: String(e?.message||e) });
   }
