@@ -1,4 +1,6 @@
-import { supabase } from "@/lib/supabaseClient";
+// NOTE: Netlify build runs on Linux (case-sensitive). Keep the same import style
+// as other pages in this repo (see Admin.jsx / AdminLogin.jsx).
+import { supabase } from "../lib/supabase.js";
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
 
