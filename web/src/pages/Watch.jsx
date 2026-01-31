@@ -9,6 +9,7 @@ export default function Watch(){
   const [note, setNote] = useState('')
   const [match, setMatch] = useState(null)
   const [paused, setPaused] = useState(false)
+  const [pausePoster, setPausePoster] = useState(null)
   const [muted, setMuted] = useState(true)
   const [theater, setTheater] = useState(false)
   const [playReady, setPlayReady] = useState(false)
@@ -16,6 +17,19 @@ export default function Watch(){
   const containerRef = useRef(null)
   const sigRef = useRef(null)
   const pcRef = useRef(null)
+  function captureFrame(){
+    try{
+      const v = videoRef.current
+      if (!v || v.readyState < 2) return
+      const c = document.createElement('canvas')
+      c.width = v.videoWidth || 1280
+      c.height = v.videoHeight || 720
+      const ctx = c.getContext('2d')
+      ctx.drawImage(v, 0, 0, c.width, c.height)
+      setPausePoster(c.toDataURL('image/jpeg', 0.85))
+    }catch(e){}
+  }
+
 
   function isIOS(){
     const ua = navigator.userAgent || ''
