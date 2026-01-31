@@ -113,7 +113,7 @@ export default function Admin({ role = 'streamer' }){
     try{
       setReqErr(''); setReqMsg('')
       const data = await apiFetch('/.netlify/functions/approve-request', { method:'POST', body:{ id } })
-      setReqMsg(`✅ Freigeschaltet: ${data.email} • Invite/E-Mail: ${data.emailSent ? 'gesendet' : 'nicht gesendet (Email-Provider prüfen)'} `)
+      setReqMsg(`✅ Freigeschaltet: ${data.email} • E-Mail: ${data.emailSent ? 'gesendet' : 'NICHT gesendet'}${data.kind ? ' • Link: ' + data.kind : ''}${!data.emailSent && data.emailError ? ' • Fehler: ' + String(data.emailError).slice(0,160) : ''}`)
       const fresh = await apiFetch('/.netlify/functions/list-requests')
       setRequests(fresh?.requests || [])
     }catch(e){

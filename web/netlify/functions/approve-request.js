@@ -12,6 +12,14 @@ function getEnv(){
   return { url, service };
 }
 
+function getRedirectTo(){
+  return process.env.APP_INVITE_REDIRECT
+    || process.env.URL
+    || process.env.DEPLOY_PRIME_URL
+    || process.env.DEPLOY_URL
+    || undefined;
+}
+
 async function requireOwnerOrAdmin(event){
   const auth = event.headers.authorization || event.headers.Authorization || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
@@ -29,8 +37,48 @@ async function requireOwnerOrAdmin(event){
     .maybeSingle();
   if(pErr) throw pErr;
   const role = String(prof?.role||'').toLowerCase();
-  if(role !== 'owner' && role !== 'admin') throw new Error('Not allowed (owner only)');
+  if(role !== 'owner' && role !== 'admin') throw new Error('Not allowed (owner/admin only)');
   return admin;
+}
+
+async function sendAccessEmail({ to, name, link, kind }){
+  const host = process.env.SMTP_HOST;
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  const from = process.env.SMTP_FROM;
+  if(!host || !user || !pass || !from){
+    return { ok:false, error:'SMTP not configured (SMTP_HOST/USER/PASS/FROM)' };
+  }
+  const nodemailer = require('nodemailer');
+  const port = Number(process.env.SMTP_PORT||587);
+  const secure = String(process.env.SMTP_SECURE||'').toLowerCase() === 'true' || port === 465;
+
+  const tr = nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: { user, pass },
+  });
+
+  const subject = kind === 'recovery'
+    ? 'ClubStream – Passwort setzen'
+    : 'ClubStream – Streamer-Zugang freigeschaltet';
+
+  const hello = name ? `Hallo ${name}` : 'Hallo';
+  const text =
+`${hello}
+
+Dein Streamer-Zugang für ClubStream wurde freigeschaltet.
+
+Bitte klicke auf diesen Link, um dein Passwort zu setzen:
+${link}
+
+Wenn du diese Anfrage nicht gestellt hast, ignoriere diese E-Mail.
+
+— ClubStream`;
+
+  await tr.sendMail({ from, to, subject, text });
+  return { ok:true };
 }
 
 exports.handler = async (event) => {
@@ -49,27 +97,36 @@ exports.handler = async (event) => {
     const email = String(req.email||'').trim();
     if(!email || !email.includes('@')) throw new Error('Invalid email in request');
 
-    // Prefer Supabase invite flow: user sets their own password via email.
-    // This requires Email provider to be configured in Supabase.
-    let userId = null;
-    const invited = await admin.auth.admin.inviteUserByEmail(email, {
-      redirectTo: process.env.APP_INVITE_REDIRECT || undefined,
-    });
-    if(invited.error){
-      // If the user already exists, we still approve them and make sure role is streamer.
-      // Supabase will not send a new invite in this case.
-      const msg = String(invited.error.message||'');
-      if(!msg.toLowerCase().includes('already')) throw invited.error;
+    const redirectTo = getRedirectTo();
+    let kind = 'invite';
 
-      // Find existing user id
-      const { data: lu, error: luErr } = await admin.auth.admin.listUsers({ page:1, perPage:1000 });
-      if(luErr) throw luErr;
-      const existing = (lu?.users||[]).find(u => (u.email||'').toLowerCase() === email.toLowerCase());
-      if(!existing) throw invited.error;
-      userId = existing.id;
-    } else {
-      userId = invited.data.user.id;
+    // Generate an invite link (creates the user) and send it via OUR SMTP.
+    // If user already exists, fall back to recovery link (set/reset password).
+    let linkData = await admin.auth.admin.generateLink({
+      type: 'invite',
+      email,
+      options: redirectTo ? { redirectTo } : undefined,
+    });
+
+    if(linkData.error){
+      const msg = String(linkData.error.message||'').toLowerCase();
+      if(msg.includes('already')){
+        kind = 'recovery';
+        linkData = await admin.auth.admin.generateLink({
+          type: 'recovery',
+          email,
+          options: redirectTo ? { redirectTo } : undefined,
+        });
+      }
     }
+
+    if(linkData.error) throw linkData.error;
+
+    const actionLink = linkData?.data?.properties?.action_link;
+    const userId = linkData?.data?.user?.id;
+
+    if(!actionLink) throw new Error('Could not generate invite link');
+    if(!userId) throw new Error('Could not resolve user id');
 
     // profile as streamer (NOT owner)
     const { error: pErr } = await admin
@@ -83,7 +140,18 @@ exports.handler = async (event) => {
       .eq('id', id);
     if(upReqErr) throw upReqErr;
 
-    return json(200, { email, emailSent: !invited.error });
+    // Send email (via SMTP vars in Netlify)
+    let emailSent = false;
+    let emailError = '';
+    try{
+      const r = await sendAccessEmail({ to: email, name: req.name, link: actionLink, kind });
+      emailSent = !!r.ok;
+      if(!r.ok) emailError = r.error || 'Email failed';
+    }catch(e){
+      emailError = String(e?.message||e);
+    }
+
+    return json(200, { email, emailSent, kind, emailError: emailError || null });
   }catch(e){
     return json(400, { error: String(e?.message||e) });
   }
