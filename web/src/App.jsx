@@ -5,6 +5,7 @@ import Watch from './pages/Watch.jsx'
 import AdminGate from './pages/AdminGate.jsx'
 import AdminLogin from './pages/AdminLogin.jsx'
 import AdminRequest from './pages/AdminRequest.jsx'
+import SetPassword from './pages/SetPassword.jsx'
 
 export default function App(){
   return (
@@ -29,6 +30,7 @@ export default function App(){
         <Route path="/admin" element={<AdminGate/>} />
         <Route path="/admin/login" element={<AdminLogin/>} />
         <Route path="/admin/request" element={<AdminRequest/>} />
+        <Route path="/set-password" element={<SetPassword/>} />
         <Route path="*" element={<Home/>} />
       </Routes>
     </div>
