@@ -27,7 +27,10 @@ export default function Admin({ role = 'streamer' }){
   const [reqErr, setReqErr] = useState('')
 
   // Match / Score state (synced to viewers)
-  const sports = ['Unihockey','Fussball','Eishockey','Basketball','Volleyball','Handball','Tennis','Sonstiges']
+  // Sport presets (from your PDF):
+  // Eishockey 3x20, Floorball 3x20, Basketball 4x10, Volleyball Sets, Inline Hockey 2x20,
+  // Fussball 2x45, Tischtennis Sets, Handball 2x30, Rugby Union 2x40, Rugby League 2x40
+  const sports = ['Unihockey','Fussball','Eishockey','Basketball','Volleyball','Inline Hockey','Handball','Tischtennis','Rugby Union','Rugby League','Sonstiges']
   const [sport, setSport] = useState(sports[0])
   const [teamA, setTeamA] = useState('Team A')
   const [teamB, setTeamB] = useState('Team B')
@@ -36,12 +39,20 @@ export default function Admin({ role = 'streamer' }){
   const [periodsTotal, setPeriodsTotal] = useState(3) // 2/3/4
   const [period, setPeriod] = useState(1)
   const [paused, setPaused] = useState(false)
+  const [pauseImageUrl, setPauseImageUrl] = useState('')
+  const [pauseUploadMsg, setPauseUploadMsg] = useState('')
 
   const sportToPeriods = {
     Fussball: 2,
     Unihockey: 3,
     Eishockey: 3,
     Basketball: 4,
+    'Inline Hockey': 2,
+    Handball: 2,
+    'Rugby Union': 2,
+    'Rugby League': 2,
+    Volleyball: 5,
+    Tischtennis: 5,
   }
 
   useEffect(()=>{
@@ -60,7 +71,7 @@ export default function Admin({ role = 'streamer' }){
   function sendPause(next){
     const sig = sigRef.current
     if (!sig) return
-    sig.send({ type:'pause-set', code, paused: !!next })
+    sig.send({ type:'pause-set', code, paused: !!next, pauseImageUrl: pauseImageUrl || null })
   }
 
   const localVideoRef = useRef(null)
@@ -205,6 +216,17 @@ export default function Admin({ role = 'streamer' }){
 
     local.getTracks().forEach(t=>pc.addTrack(t, local))
 
+    // Prefer H264 for best iOS/Safari compatibility (avoids black video on some phones)
+    try{
+      const caps = RTCRtpSender.getCapabilities?.('video')
+      const codecs = caps?.codecs || []
+      const h264 = codecs.filter(c => /H264/i.test(c.mimeType))
+      const others = codecs.filter(c => !/H264/i.test(c.mimeType))
+      const ordered = [...h264, ...others]
+      const vt = pc.getTransceivers?.().find(t => t?.sender?.track?.kind === 'video')
+      if(vt?.setCodecPreferences && ordered.length) vt.setCodecPreferences(ordered)
+    }catch{}
+
     // Try to push a better upstream bitrate for video (browser will still adapt)
     try {
       const vSender = pc.getSenders().find(s => s.track?.kind === 'video')
@@ -227,6 +249,37 @@ export default function Admin({ role = 'streamer' }){
     const offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
     sig.send({ type:'webrtc-offer', code, to: viewerId, sdp: pc.localDescription })
+  }
+
+  async function uploadPauseImage(file){
+    setPauseUploadMsg('')
+    if(!file) return
+    try{
+      const { data: sess } = await supabase.auth.getSession()
+      const token = sess?.session?.access_token
+      if(!token) throw new Error('Nicht eingeloggt')
+
+      const dataUrl = await new Promise((resolve, reject)=>{
+        const r = new FileReader()
+        r.onload = ()=>resolve(String(r.result||''))
+        r.onerror = ()=>reject(new Error('FileReader failed'))
+        r.readAsDataURL(file)
+      })
+
+      const res = await fetch('/.netlify/functions/upload-pause-image', {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ code, dataUrl })
+      })
+      const j = await res.json()
+      if(!res.ok || !j?.ok) throw new Error(j?.error || 'Upload failed')
+      setPauseImageUrl(j.url)
+      setPauseUploadMsg('Pausenbild gespeichert ✅')
+      // If currently paused, push new image to viewers immediately
+      if(status==='live' && paused) sendPause(true)
+    }catch(e){
+      setPauseUploadMsg(`Upload Fehler: ${String(e?.message||e)}`)
+    }
   }
 
   
@@ -273,6 +326,7 @@ const watchUrl = `${location.origin}/watch/${encodeURIComponent(code)}`
                   <option value={2}>2/2</option>
                   <option value={3}>3/3</option>
                   <option value={4}>4/4</option>
+                  <option value={5}>5/5</option>
                 </select>
 
                 <button className="btn" disabled={status!=='live' || period<=1} onClick={()=>{
@@ -295,8 +349,29 @@ const watchUrl = `${location.origin}/watch/${encodeURIComponent(code)}`
               </div>
             </div>
             <div className="muted" style={{marginTop:10}}>
-              Für Fussball standard 2/2, Unihockey/Eishockey 3/3, Basketball 4/4 (automatisch bei Sportart).
+              Presets: Fussball/Handball/Inline Hockey/Rugby 2/2 • Unihockey/Eishockey 3/3 • Basketball 4/4 • Volleyball/Tischtennis 5/5. (Bei „Sonstiges“ frei wählbar.)
             </div>
+
+            <div style={{height:10}}/>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
+              <div>
+                <div className="muted" style={{fontWeight:700}}>Pausenbild</div>
+                <div className="muted" style={{fontSize:12}}>Optional: eigenes Bild hochladen (für Sponsoren / Branding).</div>
+              </div>
+              <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="input"
+                  style={{width:260}}
+                  onChange={(e)=>uploadPauseImage(e.target.files?.[0])}
+                />
+                {pauseImageUrl ? (
+                  <a className="btn" href={pauseImageUrl} target="_blank" rel="noreferrer" style={{padding:'8px 10px'}}>Vorschau</a>
+                ) : null}
+              </div>
+            </div>
+            {pauseUploadMsg ? (<div className="muted" style={{marginTop:8}}>{pauseUploadMsg}</div>) : null}
           </div>
 
           <div className="muted">Code</div>

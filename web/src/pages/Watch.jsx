@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { connectSignaling } from '../lib/signaling.js'
 import { getIceConfig } from '../lib/ice.js'
+import takingABreak from '../assets/taking-a-break.png'
 
 export default function Watch(){
   const { code } = useParams()
@@ -11,6 +12,7 @@ export default function Watch(){
   const [paused, setPaused] = useState(false)
   const [pausePoster, setPausePoster] = useState(null)
   const [muted, setMuted] = useState(true)
+  const prevMutedRef = useRef(true)
   const [theater, setTheater] = useState(false)
   const [playReady, setPlayReady] = useState(false)
   const videoRef = useRef(null)
@@ -47,8 +49,11 @@ export default function Watch(){
     }
 
     try{
-      const req = cont?.requestFullscreen || cont?.webkitRequestFullscreen || cont?.msRequestFullscreen
-      if(req) await req.call(cont)
+      // Prefer fullscreen on the video element (closer to YouTube behavior)
+      const reqV = video?.requestFullscreen || video?.webkitRequestFullscreen || video?.msRequestFullscreen
+      if(reqV) return await reqV.call(video)
+      const reqC = cont?.requestFullscreen || cont?.webkitRequestFullscreen || cont?.msRequestFullscreen
+      if(reqC) return await reqC.call(cont)
     }catch{}
   }
 
@@ -89,9 +94,11 @@ export default function Watch(){
     if (msg.type === 'match-state'){
       setMatch(msg.match || null)
       if(typeof msg.paused === 'boolean') setPaused(!!msg.paused)
+      if(typeof msg.pauseImageUrl === 'string') setPausePoster(msg.pauseImageUrl || null)
     }
     if (msg.type === 'pause-state'){
       setPaused(!!msg.paused)
+      if(typeof msg.pauseImageUrl === 'string') setPausePoster(msg.pauseImageUrl || null)
     }
     if (msg.type === 'viewer-denied'){
       setNote(`Zuschauerlimit erreicht (max. ${msg.max || 80}).`)
@@ -174,6 +181,22 @@ export default function Watch(){
     await requestFullscreen()
   }
 
+  // Mute during pause (and restore previous mute state afterwards)
+  useEffect(()=>{
+    const v = videoRef.current
+    if(!v) return
+    if(paused){
+      prevMutedRef.current = muted
+      v.muted = true
+      setMuted(true)
+    }else{
+      const prev = prevMutedRef.current
+      v.muted = prev
+      setMuted(prev)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[paused])
+
 return (
     <div className="card">
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
@@ -196,28 +219,20 @@ return (
         </div>
 
         {match ? (
-          <div style={{
-            position:'absolute',top:10,left:10,right:10,
-            display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,
-            padding:'10px 12px',
-            background:'rgba(0,0,0,.45)',border:'1px solid rgba(255,255,255,.14)',
-            borderRadius:14,backdropFilter:'blur(6px)'
-          }}>
-            <div style={{minWidth:0}}>
-              <div style={{fontSize:12,opacity:.9}}>{match.sport || 'Sport'}</div>
-              <div style={{fontWeight:800,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
-                {(match.teamA||'Team A')} vs {(match.teamB||'Team B')}
-              </div>
+          <>
+            {/* left info */}
+            <div className="overlayLeft">
+              <div className="overlaySport">{match.sport || 'Sport'}</div>
+              <div className="overlayTeams">{(match.teamA||'Team A')} vs {(match.teamB||'Team B')}</div>
             </div>
-            <div style={{textAlign:'right',flexShrink:0}}>
+            {/* centered score (slim) */}
+            <div className="overlayScore">
               {match.periodsTotal ? (
-                <div style={{fontSize:12,opacity:.9,fontWeight:800}}>{Number(match.period||1)}/{Number(match.periodsTotal)}</div>
+                <div className="overlayPeriod">{Number(match.period||1)}/{Number(match.periodsTotal)}</div>
               ) : null}
-              <div style={{fontWeight:900,fontSize:18}}>
-              {Number(match.scoreA||0)} : {Number(match.scoreB||0)}
-              </div>
+              <div className="overlayScoreNum">{Number(match.scoreA||0)} : {Number(match.scoreB||0)}</div>
             </div>
-          </div>
+          </>
         ) : null}
 
         {/* overlay removed; match is shown above the video for better readability */}
@@ -249,8 +264,12 @@ return (
         )}
 
         {paused && (
-          <div className="pauseOverlay">
-            <div className="pauseOverlayInner">PAUSE</div>
+          <div className="pauseOverlayImg" onClick={()=>{ /* no-op */ }}>
+            <img
+              src={pausePoster || takingABreak}
+              alt="Pause"
+              style={{width:'100%',height:'100%',objectFit:'contain'}}
+            />
           </div>
         )}
       </div>
