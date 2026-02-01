@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { connectSignaling } from '../lib/signaling.js'
 import { getIceConfig } from '../lib/ice.js'
+import pauseDefault from '../assets/pause.png'
 
 export default function Watch(){
   const { code } = useParams()
@@ -11,12 +12,26 @@ export default function Watch(){
   const [paused, setPaused] = useState(false)
   const [pausePoster, setPausePoster] = useState(null)
   const [muted, setMuted] = useState(true)
+  const prevMutedRef = useRef(true)
   const [theater, setTheater] = useState(false)
   const [playReady, setPlayReady] = useState(false)
   const videoRef = useRef(null)
   const containerRef = useRef(null)
   const sigRef = useRef(null)
   const pcRef = useRef(null)
+
+  // When paused, force mute on viewer (and restore previous state after resume)
+  useEffect(()=>{
+    if(paused){
+      prevMutedRef.current = muted
+      setMuted(true)
+    }else{
+      // restore only if user had enabled sound
+      setMuted(!!prevMutedRef.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[paused])
+
   function captureFrame(){
     try{
       const v = videoRef.current
@@ -37,37 +52,41 @@ export default function Watch(){
   }
 
   async function requestFullscreen(){
-    const video = videoRef.current
-    const cont = containerRef.current
+    // We emulate fullscreen ("theater mode") with CSS instead of native fullscreen.
+    // Native fullscreen on iOS/Android hides our overlays (score/result + exit button).
+    setTheater(true);
+    // Prevent background scroll while in theater mode.
+    document.body.style.overflow = "hidden";
 
-    // iOS Safari: Fullscreen API is limited; use native fullscreen when possible.
-    if(isIOS() && video?.webkitEnterFullscreen){
-      try{ video.webkitEnterFullscreen() }catch{}
-      return
-    }
-
-    try{
-      const req = cont?.requestFullscreen || cont?.webkitRequestFullscreen || cont?.msRequestFullscreen
-      if(req) await req.call(cont)
-    }catch{}
+    // Ensure the video starts playing (user gesture already happened).
+    try{ await videoRef.current?.play(); }catch{}
   }
+  function closeTheater(){
+    setTheater(false);
+    // Restore scroll (iOS can keep a stale overflow state).
+    document.body.style.overflow = "";
+    // Re-center the video card after leaving theater.
+    setTimeout(()=>{
+      try{ document.querySelector(".video")?.scrollIntoView({ block: "center" }); }catch{}
+    }, 50);
+  }
+
 
   // Scroll-Lock when in theater mode
   useEffect(()=>{
-    const exitFs = () => {
-      const exit = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen
-      try{ exit?.call(document) }catch{}
-    }
-
-    if(!theater){
-      exitFs()
-      return
-    }
     const prevOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return ()=>{ document.body.style.overflow = prevOverflow }
+    if(theater){
+      document.body.style.overflow = "hidden"
+    }else{
+      document.body.style.overflow = prevOverflow || ""
+    }
+    const onKey = (e)=>{ if(e.key === "Escape") closeTheater() }
+    if(theater) window.addEventListener("keydown", onKey)
+    return ()=>{
+      document.body.style.overflow = prevOverflow
+      window.removeEventListener("keydown", onKey)
+    }
   },[theater])
-
   useEffect(()=>{
     const sig = connectSignaling(onSigMsg, (s)=>setSigOk(!!s.ok))
     sigRef.current = sig
@@ -89,9 +108,11 @@ export default function Watch(){
     if (msg.type === 'match-state'){
       setMatch(msg.match || null)
       if(typeof msg.paused === 'boolean') setPaused(!!msg.paused)
+      if(typeof msg.pauseImageUrl === 'string') setPausePoster(msg.pauseImageUrl || null)
     }
     if (msg.type === 'pause-state'){
       setPaused(!!msg.paused)
+      if(typeof msg.pauseImageUrl === 'string') setPausePoster(msg.pauseImageUrl || null)
     }
     if (msg.type === 'viewer-denied'){
       setNote(`Zuschauerlimit erreicht (max. ${msg.max || 80}).`)
@@ -107,12 +128,40 @@ export default function Watch(){
     }
   }
 
+
+  function preferH264(sdp){
+    try{
+      if(!sdp) return sdp
+      const lines = sdp.split(/\r?\n/)
+      const mLineIndex = lines.findIndex(l=>l.startsWith('m=video'))
+      if(mLineIndex === -1) return sdp
+      // find H264 payload types
+      const h264Pts = lines
+        .filter(l=>l.startsWith('a=rtpmap:') && /H264\/90000/i.test(l))
+        .map(l=>l.split(':')[1].split(' ')[0])
+      if(!h264Pts.length) return sdp
+      const mParts = lines[mLineIndex].split(' ')
+      const header = mParts.slice(0,3)
+      const pts = mParts.slice(3).filter(p=>!h264Pts.includes(p))
+      lines[mLineIndex] = [...header, ...h264Pts, ...pts].join(' ')
+      return lines.join('\r\n')
+    }catch{ return sdp }
+  }
+
   async function acceptOffer(sdp, hostId){
     const sig = sigRef.current
     if (!sig) return
     setNote('Verbinde...')
 
-    const pc = new RTCPeerConnection(await getIceConfig())
+    const ice = await getIceConfig()
+    const forceRelay = (()=>{
+      const ua = navigator.userAgent || ''
+      const mobile = /iPad|iPhone|iPod|Android/i.test(ua)
+      const conn = navigator.connection
+      const cellular = String(conn?.type||'').toLowerCase()==='cellular'
+      return mobile || cellular
+    })()
+    const pc = new RTCPeerConnection({ ...ice, iceTransportPolicy: forceRelay ? 'relay' : 'all' })
     pcRef.current = pc
 
     pc.onconnectionstatechange = ()=>{
@@ -174,6 +223,22 @@ export default function Watch(){
     await requestFullscreen()
   }
 
+  // Mute during pause (and restore previous mute state afterwards)
+  useEffect(()=>{
+    const v = videoRef.current
+    if(!v) return
+    if(paused){
+      prevMutedRef.current = muted
+      v.muted = true
+      setMuted(true)
+    }else{
+      const prev = prevMutedRef.current
+      v.muted = prev
+      setMuted(prev)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[paused])
+
 return (
     <div className="card">
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
@@ -188,7 +253,7 @@ return (
 
         <div style={{position:'absolute',top:10,right:10,display:'flex',gap:8,zIndex:6}}>
           {theater && (
-            <button className="theaterClose" onClick={()=>setTheater(false)} aria-label="Theater schliessen">×</button>
+            <button className="theaterClose" onClick={closeTheater} aria-label="Theater schliessen">×</button>
           )}
           <button className="fsBtn" onClick={handlePlay} aria-label="Fullscreen">
             ⤢
@@ -196,28 +261,20 @@ return (
         </div>
 
         {match ? (
-          <div style={{
-            position:'absolute',top:10,left:10,right:10,
-            display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,
-            padding:'10px 12px',
-            background:'rgba(0,0,0,.45)',border:'1px solid rgba(255,255,255,.14)',
-            borderRadius:14,backdropFilter:'blur(6px)'
-          }}>
-            <div style={{minWidth:0}}>
-              <div style={{fontSize:12,opacity:.9}}>{match.sport || 'Sport'}</div>
-              <div style={{fontWeight:800,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
-                {(match.teamA||'Team A')} vs {(match.teamB||'Team B')}
-              </div>
+          <>
+            {/* left info */}
+            <div className="overlayLeft">
+              <div className="overlaySport">{match.sport || 'Sport'}</div>
+              <div className="overlayTeams">{(match.teamA||'Team A')} vs {(match.teamB||'Team B')}</div>
             </div>
-            <div style={{textAlign:'right',flexShrink:0}}>
+            {/* centered score (slim) */}
+            <div className="overlayScore">
               {match.periodsTotal ? (
-                <div style={{fontSize:12,opacity:.9,fontWeight:800}}>{Number(match.period||1)}/{Number(match.periodsTotal)}</div>
+                <div className="overlayPeriod">{Number(match.period||1)}/{Number(match.periodsTotal)}</div>
               ) : null}
-              <div style={{fontWeight:900,fontSize:18}}>
-              {Number(match.scoreA||0)} : {Number(match.scoreB||0)}
-              </div>
+              <div className="overlayScoreNum">{Number(match.scoreA||0)} : {Number(match.scoreB||0)}</div>
             </div>
-          </div>
+          </>
         ) : null}
 
         {/* overlay removed; match is shown above the video for better readability */}
@@ -249,8 +306,12 @@ return (
         )}
 
         {paused && (
-          <div className="pauseOverlay">
-            <div className="pauseOverlayInner">PAUSE</div>
+          <div className="pauseOverlayImg" onClick={()=>{ /* no-op */ }}>
+            <img
+              src={pausePoster || pauseDefault}
+              alt="Pause"
+              style={{width:'100%',height:'100%',objectFit:'contain'}}
+            />
           </div>
         )}
       </div>

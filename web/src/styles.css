@@ -152,3 +152,66 @@ textarea.input{min-height:80px;resize:vertical}
     padding-bottom: env(safe-area-inset-bottom);
   }
 }
+
+/* === Watch overlays === */
+.overlayLeft{
+  position:absolute;
+  top:10px;
+  left:10px;
+  max-width:55%;
+  padding:10px 12px;
+  background:rgba(0,0,0,.45);
+  border:1px solid rgba(255,255,255,.14);
+  border-radius:14px;
+  backdrop-filter:blur(6px);
+  z-index:6;
+}
+.overlaySport{font-size:12px;opacity:.9;}
+.overlayTeams{font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+.overlayScore{
+  position:absolute;
+  top:10px;
+  left:50%;
+  transform:translateX(-50%);
+  padding:8px 12px;
+  background:rgba(0,0,0,.45);
+  border:1px solid rgba(255,255,255,.14);
+  border-radius:999px;
+  backdrop-filter:blur(6px);
+  z-index:6;
+  display:flex;
+  gap:10px;
+  align-items:center;
+}
+.overlayPeriod{font-size:12px;opacity:.9;font-weight:800;}
+.overlayScoreNum{font-weight:900;font-size:18px;}
+
+.pauseOverlayImg{
+  position:absolute;
+  inset:0;
+  background:rgba(0,0,0,.75);
+  z-index:7;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.pauseOverlayImg img{
+  max-width:100%;
+  max-height:100%;
+}
+
+
+/* --- Mobile polish for overlays (watch page) --- */
+@media (max-width: 520px){
+  .watch{padding:16px 12px;}
+  .watch h1{font-size:26px}
+  .headRow{flex-wrap:wrap; gap:10px}
+  .badgeCode{font-size:13px; padding:8px 10px}
+  .overlayWrap{padding:14px}
+  .overlaySport{font-size:14px}
+  .overlayTeams{font-size:20px; font-weight:650; letter-spacing:.2px}
+  .overlayScore{font-size:28px; padding:8px 14px}
+  .theaterScore{top:12px; left:12px; right:12px}
+  .theaterClose{top:12px; left:12px; width:44px; height:44px}
+}

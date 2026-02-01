@@ -26,7 +26,7 @@ const wss = new WebSocketServer({ server });
 const clients = new Map(); // ws -> {id}
 const MAX_VIEWERS = Number(process.env.MAX_VIEWERS || 80);
 
-// code -> {hostId: string|null, viewers: Set<string>, match: object|null, paused: boolean}
+// code -> {hostId: string|null, viewers: Set<string>, match: object|null, paused: boolean, pauseImageUrl: string|null}
 const rooms = new Map();
 
 function uid() {
@@ -45,7 +45,7 @@ function findWsById(id) {
 }
 
 function getRoom(code) {
-  if (!rooms.has(code)) rooms.set(code, { hostId: null, viewers: new Set(), match: null, paused: false });
+  if (!rooms.has(code)) rooms.set(code, { hostId: null, viewers: new Set(), match: null, paused: false, pauseImageUrl: null });
   return rooms.get(code);
 }
 
@@ -105,8 +105,8 @@ wss.on('connection', (ws) => {
         const vws = findWsById(vid);
         if (vws) {
           safeSend(vws, { type: 'host-available', code });
-          if (room.match) safeSend(vws, { type: 'match-state', code, match: room.match, paused: room.paused });
-          safeSend(vws, { type: 'pause-state', code, paused: room.paused });
+          if (room.match) safeSend(vws, { type: 'match-state', code, match: room.match, paused: room.paused, pauseImageUrl: room.pauseImageUrl });
+          safeSend(vws, { type: 'pause-state', code, paused: room.paused, pauseImageUrl: room.pauseImageUrl });
         }
       }
       return;
@@ -120,8 +120,8 @@ wss.on('connection', (ws) => {
       }
       room.viewers.add(meta.id);
       safeSend(ws, { type: 'viewer-joined-ok', code, viewerId: meta.id, hostPresent: !!room.hostId });
-      if (room.match) safeSend(ws, { type: 'match-state', code, match: room.match, paused: room.paused });
-      safeSend(ws, { type: 'pause-state', code, paused: room.paused });
+      if (room.match) safeSend(ws, { type: 'match-state', code, match: room.match, paused: room.paused, pauseImageUrl: room.pauseImageUrl });
+      safeSend(ws, { type: 'pause-state', code, paused: room.paused, pauseImageUrl: room.pauseImageUrl });
       const hws = room.hostId ? findWsById(room.hostId) : null;
       if (hws) safeSend(hws, { type: 'viewer-joined', code, viewerId: meta.id });
       return;
@@ -146,10 +146,13 @@ wss.on('connection', (ws) => {
       const room = rooms.get(code);
       if (!room || room.hostId !== meta.id) return safeSend(ws, { type: 'error', message: 'not-host', code });
       room.paused = !!msg?.paused;
+      if (typeof msg?.pauseImageUrl === 'string') {
+        room.pauseImageUrl = msg.pauseImageUrl || null;
+      }
       for (const vid of room.viewers) {
         const vws = findWsById(vid);
-        if (vws) safeSend(vws, { type: 'pause-state', code, paused: room.paused });
-        if (room.match && vws) safeSend(vws, { type: 'match-state', code, match: room.match, paused: room.paused });
+        if (vws) safeSend(vws, { type: 'pause-state', code, paused: room.paused, pauseImageUrl: room.pauseImageUrl });
+        if (room.match && vws) safeSend(vws, { type: 'match-state', code, match: room.match, paused: room.paused, pauseImageUrl: room.pauseImageUrl });
       }
       return;
     }
@@ -162,7 +165,7 @@ wss.on('connection', (ws) => {
       room.match = msg?.match || null;
       for (const vid of room.viewers) {
         const vws = findWsById(vid);
-        if (vws) safeSend(vws, { type: 'match-state', code, match: room.match, paused: room.paused });
+        if (vws) safeSend(vws, { type: 'match-state', code, match: room.match, paused: room.paused, pauseImageUrl: room.pauseImageUrl });
       }
       return;
     }
