@@ -1,7 +1,4 @@
-// NOTE: Netlify build runs on Linux (case-sensitive). Keep the same import style
-// as other pages in this repo (see Admin.jsx / AdminLogin.jsx).
-import { supabase } from "../lib/supabase.js";
-
+import { supabase } from "@/lib/supabaseClient";
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -35,7 +32,7 @@ export default function AdminRequest(){
   return (
     <div className="card">
       <h2 style={{marginTop:0}}>Admin-Zugang anfragen</h2>
-      <div className="muted">Du bekommst nach Freigabe ein Streamer-Konto. (Nach Freigabe bekommst du eine E-Mail mit Link zum Passwort setzen.)</div>
+      <div className="muted">Du bekommst nach Freigabe ein Streamer-Konto. (Die Anfrage wird gespeichert – keine automatische E-Mail.)</div>
 
       <form onSubmit={submit} style={{marginTop:12,display:"grid",gap:10}}>
         <label>

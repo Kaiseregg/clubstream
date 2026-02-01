@@ -9,6 +9,25 @@ function mkCode(){
   return `${a}-${b}`
 }
 
+function preferH264(sdp){
+  try{
+    if(!sdp) return sdp
+    const lines = sdp.split(/\r?\n/)
+    const mLineIndex = lines.findIndex(l=>l.startsWith('m=video'))
+    if(mLineIndex === -1) return sdp
+    const h264Pts = lines
+      .filter(l=>l.startsWith('a=rtpmap:') && /H264\/90000/i.test(l))
+      .map(l=>l.split(':')[1].split(' ')[0])
+    if(!h264Pts.length) return sdp
+    const mParts = lines[mLineIndex].split(' ')
+    const header = mParts.slice(0,3)
+    const pts = mParts.slice(3).filter(p=>!h264Pts.includes(p))
+    lines[mLineIndex] = [...header, ...h264Pts, ...pts].join(' ')
+    return lines.join('\r\n')
+  }catch{ return sdp }
+}
+
+
 // Ice servers are fetched from /.netlify/functions/ice-servers (Cloudflare TURN when configured).
 
 export default function Admin({ role = 'streamer' }){
@@ -247,6 +266,7 @@ export default function Admin({ role = 'streamer' }){
     }
 
     const offer = await pc.createOffer()
+    offer.sdp = preferH264(offer.sdp)
     await pc.setLocalDescription(offer)
     sig.send({ type:'webrtc-offer', code, to: viewerId, sdp: pc.localDescription })
   }

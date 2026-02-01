@@ -55,6 +55,17 @@ exports.handler = async (event) => {
     const { buf, contentType, ext } = parseDataUrl(body.dataUrl);
 
     const bucket = 'pause-images';
+    // Auto-create bucket if missing (first install)
+    try{
+      const { data: buckets } = await admin.storage.listBuckets();
+      const exists = Array.isArray(buckets) && buckets.some(b=>b?.name===bucket);
+      if(!exists){
+        await admin.storage.createBucket(bucket, { public: true });
+      }
+    }catch(e){
+      // ignore if already exists / not supported
+    }
+
     const path = `${code}/${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`;
 
     const { error: upErr } = await admin.storage.from(bucket).upload(path, buf, {
