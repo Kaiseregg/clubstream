@@ -1,90 +1,163 @@
-const { createClient } = require('@supabase/supabase-js');
+const { createClient } = require("@supabase/supabase-js");
+const nodemailer = require("nodemailer");
 
 function json(status, obj){
-  return { statusCode: status, headers: { 'Content-Type':'application/json' }, body: JSON.stringify(obj) };
+  return { statusCode: status, headers: { "Content-Type":"application/json" }, body: JSON.stringify(obj) };
 }
 
-function getEnv(){
-  const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+function must(name){
+  const v = process.env[name];
+  if(!v) throw new Error(`Missing env: ${name}`);
+  return v;
+}
+
+function getSupabase(){
+  const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if(!url) throw new Error('Missing SUPABASE URL env (VITE_SUPABASE_URL or SUPABASE_URL)');
-  if(!service) throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY in Netlify env');
-  return { url, service };
+  if(!url) throw new Error("Missing SUPABASE_URL (or VITE_SUPABASE_URL)");
+  if(!service) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(url, service, { auth: { persistSession:false, autoRefreshToken:false } });
 }
 
-async function requireOwnerOrAdmin(event){
-  const auth = event.headers.authorization || event.headers.Authorization || '';
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-  if(!token) throw new Error('Missing Authorization Bearer token');
-  const { url, service } = getEnv();
-  const admin = createClient(url, service, { auth: { persistSession:false } });
+async function requireOwnerOrAdmin(event, admin){
+  const auth = event.headers.authorization || event.headers.Authorization || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+  if(!token) throw new Error("Missing Authorization Bearer token");
+
   const { data: u, error: uErr } = await admin.auth.getUser(token);
   if(uErr) throw uErr;
+
   const userId = u?.user?.id;
-  if(!userId) throw new Error('Invalid token');
+  if(!userId) throw new Error("Invalid token");
+
   const { data: prof, error: pErr } = await admin
-    .from('admin_profiles')
-    .select('role')
-    .eq('user_id', userId)
+    .from("admin_profiles")
+    .select("role")
+    .eq("user_id", userId)
     .maybeSingle();
+
   if(pErr) throw pErr;
-  const role = String(prof?.role||'').toLowerCase();
-  if(role !== 'owner' && role !== 'admin') throw new Error('Not allowed (owner only)');
-  return admin;
+  const role = String(prof?.role||"").toLowerCase();
+  if(role !== "owner" && role !== "admin") throw new Error("Not allowed (owner/admin only)");
+}
+
+function getAppBase(){
+  // Netlify exposes process.env.URL for the main site URL
+  const url = process.env.URL || process.env.APP_BASE_URL || "";
+  if(!url) throw new Error("Missing APP_BASE_URL (or Netlify URL env)");
+  return url.replace(/\/$/, "");
+}
+
+function smtpTransport(){
+  const host = must("SMTP_HOST");
+  const port = parseInt(must("SMTP_PORT"), 10);
+  const user = must("SMTP_USER");
+  const pass = must("SMTP_PASS");
+  const secure = String(process.env.SMTP_SECURE || "").toLowerCase() === "true" || port === 465;
+
+  return nodemailer.createTransport({ host, port, secure, auth: { user, pass } });
+}
+
+async function findUserIdByEmail(admin, email){
+  // listUsers is paginated; for small projects one page is ok
+  const { data, error } = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+  if(error) throw error;
+  const u = (data?.users || []).find(x => (x.email||"").toLowerCase() === email.toLowerCase());
+  return u?.id || null;
 }
 
 exports.handler = async (event) => {
   try{
-    if(event.httpMethod !== 'POST') return json(405,{error:'Method not allowed'});
-    const admin = await requireOwnerOrAdmin(event);
-    const body = JSON.parse(event.body||'{}');
+    if(event.httpMethod !== "POST") return json(405, { error:"Method not allowed" });
+
+    const admin = getSupabase();
+    await requireOwnerOrAdmin(event, admin);
+
+    const body = JSON.parse(event.body || "{}");
     const id = body.id;
-    if(!id) throw new Error('Missing id');
+    if(!id) throw new Error("Missing id");
 
-    const { data: req, error: rErr } = await admin.from('admin_requests').select('*').eq('id', id).maybeSingle();
+    const { data: req, error: rErr } = await admin
+      .from("admin_requests")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
     if(rErr) throw rErr;
-    if(!req) throw new Error('Request not found');
-    if(req.status !== 'pending') throw new Error('Request already processed');
+    if(!req) throw new Error("Request not found");
+    if(req.status !== "pending") throw new Error("Request already processed");
 
-    const email = String(req.email||'').trim();
-    if(!email || !email.includes('@')) throw new Error('Invalid email in request');
+    const email = String(req.email||"").trim();
+    const name = String(req.name||"").trim() || "Hallo";
+    if(!email || !email.includes("@")) throw new Error("Invalid email in request");
 
-    // Prefer Supabase invite flow: user sets their own password via email.
-    // This requires Email provider to be configured in Supabase.
-    let userId = null;
-    const invited = await admin.auth.admin.inviteUserByEmail(email, {
-      redirectTo: process.env.APP_INVITE_REDIRECT || undefined,
-    });
-    if(invited.error){
-      // If the user already exists, we still approve them and make sure role is streamer.
-      // Supabase will not send a new invite in this case.
-      const msg = String(invited.error.message||'');
-      if(!msg.toLowerCase().includes('already')) throw invited.error;
+    // Determine if user exists; use invite for new users, recovery for existing.
+    let userId = await findUserIdByEmail(admin, email);
+    let linkType = userId ? "recovery" : "invite";
 
-      // Find existing user id
-      const { data: lu, error: luErr } = await admin.auth.admin.listUsers({ page:1, perPage:1000 });
-      if(luErr) throw luErr;
-      const existing = (lu?.users||[]).find(u => (u.email||'').toLowerCase() === email.toLowerCase());
-      if(!existing) throw invited.error;
-      userId = existing.id;
-    } else {
+    // Ensure user exists (invite creates user)
+    if(!userId){
+      const invited = await admin.auth.admin.inviteUserByEmail(email);
+      if(invited.error) throw invited.error;
       userId = invited.data.user.id;
     }
 
-    // profile as streamer (NOT owner)
+    // Generate a link but DO NOT send Supabase action_link directly.
+    // We'll send an app-link containing token_hash, and verification happens only
+    // when the user submits the password form (prevents mail scanners consuming the token).
+    const appBase = getAppBase();
+    const next = "/admin";
+    const { data: gl, error: glErr } = await admin.auth.admin.generateLink({
+      type: linkType,
+      email,
+    });
+    if(glErr) throw glErr;
+
+    const tokenHash = gl?.properties?.hashed_token || "";
+    const appLink = tokenHash
+      ? `${appBase}/set-password?type=${encodeURIComponent(linkType)}&token_hash=${encodeURIComponent(tokenHash)}&next=${encodeURIComponent(next)}`
+      : (gl?.properties?.action_link || gl?.action_link);
+
+    // Role: streamer
     const { error: pErr } = await admin
-      .from('admin_profiles')
-      .upsert({ user_id: userId, role: 'streamer' }, { onConflict:'user_id' });
+      .from("admin_profiles")
+      .upsert({ user_id: userId, role: "streamer" }, { onConflict:"user_id" });
     if(pErr) throw pErr;
 
-    const { error: upReqErr } = await admin
-      .from('admin_requests')
-      .update({ status:'approved', approved_at: new Date().toISOString() })
-      .eq('id', id);
-    if(upReqErr) throw upReqErr;
+    // Mark request approved
+    const { error: upErr } = await admin
+      .from("admin_requests")
+      .update({ status:"approved", approved_at: new Date().toISOString() })
+      .eq("id", id);
+    if(upErr) throw upErr;
 
-    return json(200, { email, emailSent: !invited.error });
+    // Send mail via SMTP
+    const transporter = smtpTransport();
+    const from = must("SMTP_FROM");
+
+    const subject = "ClubStream: Streamer-Zugang freigeschaltet";
+    const text =
+`${name}
+
+Dein Streamer-Zugang für ClubStream wurde freigeschaltet.
+
+Bitte öffne diesen Link, um dein Passwort zu setzen:
+${appLink}
+
+Wenn du diese Anfrage nicht gestellt hast, ignoriere diese E-Mail.
+
+– ClubStream
+`;
+
+    const info = await transporter.sendMail({ from, to: email, subject, text });
+
+    return json(200, {
+      ok: true,
+      email,
+      linkType,
+      emailSent: true,
+      messageId: info.messageId || null,
+    });
   }catch(e){
-    return json(400, { error: String(e?.message||e) });
+    return json(400, { error: String(e?.message || e) });
   }
 };
