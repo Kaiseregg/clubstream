@@ -1,4 +1,4 @@
-// FINAL Watch.jsx – viewer fix ONLY (no CSS changes)
+// Watch.jsx – robust viewer: dark overlay (inline), multi-protocol join/offer, join-ping retry
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { getIceConfig } from "../lib/ice";
@@ -11,19 +11,16 @@ export default function Watch() {
   const pcRef = useRef(null);
   const sigRef = useRef(null);
   const remoteStreamRef = useRef(new MediaStream());
-  const lastJoinRef = useRef(0);
-
-  const [started, setStarted] = useState(false);
+  const joinTimerRef = useRef(null);
   const [connecting, setConnecting] = useState(false);
   const [hasMedia, setHasMedia] = useState(false);
   const [hint, setHint] = useState("Tippe auf Play, um abzuspielen.");
-  const [isFullscreen, setIsFullscreen] = useState(false);
 
   function cleanupPc() {
     if (pcRef.current) {
       pcRef.current.ontrack = null;
       pcRef.current.oniceconnectionstatechange = null;
-      pcRef.current.close();
+      try { pcRef.current.close(); } catch {}
       pcRef.current = null;
     }
     remoteStreamRef.current = new MediaStream();
@@ -34,106 +31,149 @@ export default function Watch() {
   async function userStartPlayback() {
     const v = videoRef.current;
     if (!v) return;
-    v.muted = true;
+    v.muted = true; // autoplay-safe; user can unmute via your existing UI
     try { await v.play(); } catch {}
   }
 
+  function sendJoin() {
+    const payloads = [
+      { type: "viewer-join", code },
+      { type: "viewer_join", code },
+      { type: "join", role: "viewer", code },
+    ];
+    payloads.forEach(p => {
+      try { sigRef.current?.send?.(p); } catch {}
+    });
+  }
+
+  function startJoinLoop() {
+    if (joinTimerRef.current) clearInterval(joinTimerRef.current);
+    let tries = 0;
+    sendJoin();
+    joinTimerRef.current = setInterval(() => {
+      if (hasMedia) return;
+      tries += 1;
+      sendJoin();
+      if (tries >= 6) {
+        clearInterval(joinTimerRef.current);
+        joinTimerRef.current = null;
+        setConnecting(false);
+        setHint("Keine Verbindung – tippe erneut.");
+      }
+    }, 1500); // ~9s total
+  }
+
   async function joinOrRetry() {
-    setStarted(true);
     setConnecting(true);
     setHint("Verbinde…");
     await userStartPlayback();
-
-    const now = Date.now();
-    if (now - lastJoinRef.current < 800) return;
-    lastJoinRef.current = now;
-
-    sigRef.current?.send?.({ type: "viewer-join", code });
+    startJoinLoop();
   }
 
   useEffect(() => {
+    cleanupPc();
+    if (joinTimerRef.current) { clearInterval(joinTimerRef.current); joinTimerRef.current = null; }
+
     sigRef.current = connectSignal(
       async (msg) => {
-        if (msg.type === "webrtc-offer") {
-          cleanupPc();
+        // Debug: uncomment if needed
+        // console.log("[viewer] msg", msg);
 
-          const pc = new RTCPeerConnection(await getIceConfig(true));
-          pcRef.current = pc;
+        const t = msg?.type;
+        const offerObj = (t === "webrtc-offer" || t === "offer" || t === "rtc-offer") ? (msg.offer || msg.sdp || msg) : null;
+        if (!offerObj) return;
 
-          pc.ontrack = (ev) => {
-            ev.streams[0].getTracks().forEach(t =>
-              remoteStreamRef.current.addTrack(t)
-            );
+        cleanupPc();
+        const pc = new RTCPeerConnection(await getIceConfig(true));
+        pcRef.current = pc;
 
-            if (videoRef.current) {
-              videoRef.current.srcObject = remoteStreamRef.current;
-              userStartPlayback();
-              setHasMedia(true);
-              setConnecting(false);
-              setHint("");
-            }
-          };
+        pc.ontrack = (ev) => {
+          ev.streams?.[0]?.getTracks?.().forEach(tr => remoteStreamRef.current.addTrack(tr));
+          if (videoRef.current) {
+            videoRef.current.srcObject = remoteStreamRef.current;
+            userStartPlayback();
+            setHasMedia(true);
+            setConnecting(false);
+            setHint("");
+            if (joinTimerRef.current) { clearInterval(joinTimerRef.current); joinTimerRef.current = null; }
+          }
+        };
 
-          pc.oniceconnectionstatechange = () => {
-            if (["failed", "disconnected"].includes(pc.iceConnectionState)) {
-              cleanupPc();
-              joinOrRetry();
-            }
-          };
+        pc.oniceconnectionstatechange = () => {
+          const s = pc.iceConnectionState;
+          if (s === "failed" || s === "disconnected") {
+            cleanupPc();
+            joinOrRetry();
+          }
+        };
 
-          await pc.setRemoteDescription(msg.offer);
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
+        await pc.setRemoteDescription(offerObj);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
 
-          sigRef.current.send({
-            type: "webrtc-answer",
-            answer,
-            code
-          });
-        }
+        // Send multiple answer variants (host will use what it expects)
+        const answers = [
+          { type: "webrtc-answer", answer, code },
+          { type: "answer", answer, code },
+          { type: "rtc-answer", answer, code },
+        ];
+        answers.forEach(a => { try { sigRef.current?.send?.(a); } catch {} });
       },
       () => {}
     );
 
     return () => {
+      if (joinTimerRef.current) { clearInterval(joinTimerRef.current); joinTimerRef.current = null; }
       cleanupPc();
-      sigRef.current?.close?.();
+      try { sigRef.current?.close?.(); } catch {}
     };
-  }, [code]);
-
-  useEffect(() => {
-    if (!started || hasMedia) return;
-    const t = setTimeout(() => {
-      if (!hasMedia) {
-        setConnecting(false);
-        setHint("Keine Verbindung – tippe erneut.");
-      }
-    }, 6000);
-    return () => clearTimeout(t);
-  }, [started, hasMedia]);
-
-  useEffect(() => {
-    const f = () => setIsFullscreen(!!document.fullscreenElement);
-    document.addEventListener("fullscreenchange", f);
-    return () => document.removeEventListener("fullscreenchange", f);
-  }, []);
+  }, [code]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function toggleFullscreen() {
     if (!wrapRef.current) return;
-    if (document.fullscreenElement) await document.exitFullscreen();
-    else await wrapRef.current.requestFullscreen();
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+        requestAnimationFrame(() => window.scrollTo(0, 0));
+      } else {
+        await wrapRef.current.requestFullscreen();
+      }
+    } catch {}
   }
 
   return (
     <div className="videoWrap" ref={wrapRef}>
       <video ref={videoRef} playsInline />
+
       {!hasMedia && (
-        <button className="overlayPlay" onClick={joinOrRetry}>
-          <div>▶ Start</div>
-          <small>{connecting ? "Verbinde…" : hint}</small>
+        <button
+          onClick={joinOrRetry}
+          style={{
+            position: "absolute",
+            inset: 0,
+            margin: "auto",
+            width: 220,
+            height: 140,
+            borderRadius: 16,
+            background: "rgba(0,0,0,0.65)",
+            color: "#fff",
+            border: "1px solid rgba(255,255,255,0.25)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+            cursor: "pointer",
+            backdropFilter: "blur(6px)",
+          }}
+          aria-label="Start"
+        >
+          <div style={{ fontSize: 22, fontWeight: 700 }}>▶ Start</div>
+          <div style={{ fontSize: 12, opacity: 0.85 }}>{connecting ? "Verbinde…" : hint}</div>
         </button>
       )}
-      <button className="fsBtn" onClick={toggleFullscreen}>⤢</button>
+
+      <button className="fsBtn" onClick={toggleFullscreen} aria-label="Fullscreen">⤢</button>
       <Link to="/" className="backBtn">← Zurück</Link>
     </div>
   );
