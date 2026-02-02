@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { getIceConfig } from "../lib/ice";
-import { connectSignal } from "../lib/signaling";
+import { connectSignaling as connectSignal } from "../lib/signaling";
 
 export default function Watch() {
   const { code } = useParams();
@@ -52,36 +52,51 @@ export default function Watch() {
   }
 
   useEffect(() => {
-    sigRef.current = connectSignal(code, async (msg) => {
-      if (msg.type === "webrtc-offer") {
-        cleanupPc();
-        const pc = new RTCPeerConnection(await getIceConfig(true));
-        pcRef.current = pc;
+   sigRef.current = connectSignaling(
+  async (msg) => {
+    if (msg.type === "webrtc-offer") {
+      cleanupPc();
 
-        pc.ontrack = (ev) => {
-          ev.streams[0].getTracks().forEach(t => remoteStreamRef.current.addTrack(t));
-          if (videoRef.current) {
-            videoRef.current.srcObject = remoteStreamRef.current;
-            userStartPlayback();
-            setHasMedia(true);
-            setConnecting(false);
-            setHint("");
-          }
-        };
+      const pc = new RTCPeerConnection(await getIceConfig(true));
+      pcRef.current = pc;
 
-        pc.oniceconnectionstatechange = () => {
-          if (["failed", "disconnected"].includes(pc.iceConnectionState)) {
-            cleanupPc();
-            joinOrRetry();
-          }
-        };
+      pc.ontrack = (ev) => {
+        ev.streams[0].getTracks().forEach(t =>
+          remoteStreamRef.current.addTrack(t)
+        );
 
-        await pc.setRemoteDescription(msg.offer);
-        const ans = await pc.createAnswer();
-        await pc.setLocalDescription(ans);
-        sigRef.current.send({ type: "webrtc-answer", answer: ans, code });
-      }
-    });
+        if (videoRef.current) {
+          videoRef.current.srcObject = remoteStreamRef.current;
+          userStartPlayback();
+          setHasMedia(true);
+          setConnecting(false);
+          setHint("");
+        }
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        if (["failed", "disconnected"].includes(pc.iceConnectionState)) {
+          cleanupPc();
+          joinOrRetry();
+        }
+      };
+
+      await pc.setRemoteDescription(msg.offer);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      sigRef.current.send({
+        type: "webrtc-answer",
+        answer,
+        code
+      });
+    }
+  },
+  (status) => {
+    // optional – kannst du später für UI nutzen
+    // console.log("signaling status", status);
+  }
+);
 
     return () => {
       cleanupPc();
