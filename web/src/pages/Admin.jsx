@@ -36,6 +36,11 @@ export default function Admin({ role = 'streamer' }){
   const [status, setStatus] = useState('idle') // idle | live
   const [err, setErr] = useState('')
   const [facingMode, setFacingMode] = useState('environment')
+// 5G / NAT Fix: optional TURN-Relay erzwingen via URL ?relay=1
+const forceRelay = useMemo(() => {
+  try { return new URLSearchParams(window.location.search).get('relay') === '1' }
+  catch { return false }
+}, [])
 
   // Owner: manage access requests (creates streamer accounts)
   // Wir erlauben hier zusätzlich role=admin, damit du nicht "blind" bist,
@@ -230,8 +235,13 @@ export default function Admin({ role = 'streamer' }){
     if (!sig) return
     const local = await ensureMedia()
 
-    const pc = new RTCPeerConnection(await getIceConfig())
-    pcsRef.current.set(viewerId, pc)
+   const iceCfg = await getIceConfig()
+const pc = new RTCPeerConnection({
+  ...iceCfg,
+  iceTransportPolicy: forceRelay ? 'relay' : 'all',
+})
+pcsRef.current.set(viewerId, pc)
+
 
     local.getTracks().forEach(t=>pc.addTrack(t, local))
 
@@ -328,6 +338,7 @@ const watchUrl = `${location.origin}/watch/${encodeURIComponent(code)}`
             <h2 className="h">Admin • Live Stream</h2>
             <div style={{display:'flex',gap:10,alignItems:'center'}}>
               <span className="badge">Signaling: {sigOk ? 'ok' : 'offline'}</span>
+              {forceRelay ? <span className="badge">ICE: relay</span> : <span className="badge">ICE: all</span>}
               <button className="btn" onClick={logout} style={{padding:'8px 10px'}}>Abmelden</button>
             </div>
           </div>

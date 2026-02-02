@@ -1,20 +1,13 @@
 [build]
-  base = "web"
-  command = "npm run build"
-  publish = "dist"
-  functions = "netlify/functions"
+base = "web"
+command = "npm run build"
+publish = "dist"
+
+[functions]
+directory = "netlify/functions"
 
 [[redirects]]
-  from = "/.netlify/functions/ice"
-  to = "/.netlify/functions/ice-servers"
-  status = 200
+from = "/*"
+to = "/index.html"
+status = 200
 
-[[redirects]]
-  from = "/netlify/functions/*"
-  to = "/.netlify/functions/:splat"
-  status = 200
-
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
