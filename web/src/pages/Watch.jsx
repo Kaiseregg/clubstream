@@ -11,92 +11,97 @@ export default function Watch(){
   const [match, setMatch] = useState(null)
   const [paused, setPaused] = useState(false)
   const [pausePoster, setPausePoster] = useState(null)
+
+  // audio: always start muted; unmute only by user click
   const [muted, setMuted] = useState(true)
   const prevMutedRef = useRef(true)
+
   const [theater, setTheater] = useState(false)
-  const [playReady, setPlayReady] = useState(false)
+  const [playReady, setPlayReady] = useState(false) // true once video.play() succeeded at least once
+  const [started, setStarted] = useState(false)     // user clicked start
+
   const videoRef = useRef(null)
-  const containerRef = useRef(null)
   const sigRef = useRef(null)
   const pcRef = useRef(null)
+  const remoteStreamRef = useRef(new MediaStream())
+  const hostIdRef = useRef(null)
 
-  // When paused, force mute on viewer (and restore previous state after resume)
+  const reconnectingRef = useRef(false)
+  const discTimerRef = useRef(null)
+
+  function cleanupPc(){
+    try{ if (discTimerRef.current) { clearTimeout(discTimerRef.current); discTimerRef.current = null } }catch{}
+    try{
+      const pc = pcRef.current
+      if(pc){
+        pc.ontrack = null
+        pc.onicecandidate = null
+        pc.oniceconnectionstatechange = null
+        pc.onconnectionstatechange = null
+        try{ pc.close() }catch{}
+      }
+    }catch{}
+    pcRef.current = null
+    remoteStreamRef.current = new MediaStream()
+    try{ if(videoRef.current) videoRef.current.srcObject = null }catch{}
+    setPlayReady(false)
+  }
+
+  // Pause handling: force mute during pause, restore previous choice after resume
   useEffect(()=>{
+    const v = videoRef.current
+    if(!v) return
     if(paused){
       prevMutedRef.current = muted
+      v.muted = true
       setMuted(true)
     }else{
-      // restore only if user had enabled sound
-      setMuted(!!prevMutedRef.current)
+      const prev = !!prevMutedRef.current
+      v.muted = prev
+      setMuted(prev)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[paused])
 
-  function captureFrame(){
+  async function startPlayback(){
+    setStarted(true)
+    const v = videoRef.current
+    if(!v) return
+    // first play must be muted for reliable autoplay on mobile
+    v.muted = true
+    setMuted(true)
     try{
-      const v = videoRef.current
-      if (!v || v.readyState < 2) return
-      const c = document.createElement('canvas')
-      c.width = v.videoWidth || 1280
-      c.height = v.videoHeight || 720
-      const ctx = c.getContext('2d')
-      ctx.drawImage(v, 0, 0, c.width, c.height)
-      setPausePoster(c.toDataURL('image/jpeg', 0.85))
-    }catch(e){}
+      await v.play?.()
+      setPlayReady(true)
+      setNote('')
+    }catch{
+      setPlayReady(false)
+      setNote('Tippe auf Start, um abzuspielen.')
+    }
   }
 
-
-  function isIOS(){
-    const ua = navigator.userAgent || ''
-    return /iPad|iPhone|iPod/.test(ua) && !window.MSStream
-  }
-
-  async function requestFullscreen(){
-    // We emulate fullscreen ("theater mode") with CSS instead of native fullscreen.
-    // Native fullscreen on iOS/Android hides our overlays (score/result + exit button).
-    setTheater(true);
-    // Prevent background scroll while in theater mode.
-    document.body.style.overflow = "hidden";
-
-    // Ensure the video starts playing (user gesture already happened).
-    try{ await videoRef.current?.play(); }catch{}
+  function requestTheater(){
+    setTheater(true)
+    document.body.style.overflow = 'hidden'
+    // user gesture already happened (button click)
+    try{ videoRef.current?.play?.() }catch{}
   }
   function closeTheater(){
-    setTheater(false);
-    // Restore scroll (iOS can keep a stale overflow state).
-    document.body.style.overflow = "";
-    // Re-center the video card after leaving theater.
-    setTimeout(()=>{
-      try{ document.querySelector(".video")?.scrollIntoView({ block: "center" }); }catch{}
-    }, 50);
+    setTheater(false)
+    document.body.style.overflow = ''
+    setTimeout(()=>{ try{ document.querySelector('.video')?.scrollIntoView({ block:'center' }) }catch{} }, 50)
   }
 
-
-  // Scroll-Lock when in theater mode
   useEffect(()=>{
     const prevOverflow = document.body.style.overflow
-    if(theater){
-      document.body.style.overflow = "hidden"
-    }else{
-      document.body.style.overflow = prevOverflow || ""
-    }
-    const onKey = (e)=>{ if(e.key === "Escape") closeTheater() }
-    if(theater) window.addEventListener("keydown", onKey)
+    if(theater) document.body.style.overflow = 'hidden'
+    const onKey = (e)=>{ if(e.key === 'Escape') closeTheater() }
+    if(theater) window.addEventListener('keydown', onKey)
     return ()=>{
       document.body.style.overflow = prevOverflow
-      window.removeEventListener("keydown", onKey)
+      window.removeEventListener('keydown', onKey)
     }
   },[theater])
-  useEffect(()=>{
-    const sig = connectSignaling(onSigMsg, (s)=>setSigOk(!!s.ok))
-    sigRef.current = sig
-    sig.send({ type:'viewer-join', code })
-    return ()=>{
-      try{ sig.close?.() ?? sig.ws.close() }catch{}
-      try{ pcRef.current?.close() }catch{}
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code])
 
   function onSigMsg(msg){
     if (msg.type === 'webrtc-offer' && msg.sdp){
@@ -118,42 +123,46 @@ export default function Watch(){
       setNote(`Zuschauerlimit erreicht (max. ${msg.max || 80}).`)
     }
     if (msg.type === 'host-available'){
-      // Host came back, new offer will follow.
       setNote('Stream wird wieder verbunden…')
+      hardReconnect('host-available')
     }
     if (msg.type === 'ended'){
       setNote(msg?.canReconnect ? 'Stream unterbrochen – warte auf Restart…' : 'Stream beendet.')
-      try{ pcRef.current?.close() }catch{}
-      pcRef.current = null
+      cleanupPc()
     }
   }
 
+  useEffect(()=>{
+    const sig = connectSignaling(onSigMsg, (s)=>setSigOk(!!s.ok))
+    sigRef.current = sig
+    sig.send({ type:'viewer-join', code })
+    return ()=>{
+      try{ sig.close?.() ?? sig.ws.close() }catch{}
+      cleanupPc()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code])
 
-  function preferH264(sdp){
-    try{
-      if(!sdp) return sdp
-      const lines = sdp.split(/\r?\n/)
-      const mLineIndex = lines.findIndex(l=>l.startsWith('m=video'))
-      if(mLineIndex === -1) return sdp
-      // find H264 payload types
-      const h264Pts = lines
-        .filter(l=>l.startsWith('a=rtpmap:') && /H264\/90000/i.test(l))
-        .map(l=>l.split(':')[1].split(' ')[0])
-      if(!h264Pts.length) return sdp
-      const mParts = lines[mLineIndex].split(' ')
-      const header = mParts.slice(0,3)
-      const pts = mParts.slice(3).filter(p=>!h264Pts.includes(p))
-      lines[mLineIndex] = [...header, ...h264Pts, ...pts].join(' ')
-      return lines.join('\r\n')
-    }catch{ return sdp }
+  function hardReconnect(_reason){
+    if(reconnectingRef.current) return
+    reconnectingRef.current = true
+    setNote('Stream wird wieder verbunden…')
+    cleanupPc()
+    try{ sigRef.current?.send({ type:'viewer-join', code }) }catch{}
+    setTimeout(()=>{ reconnectingRef.current = false }, 1200)
   }
 
   async function acceptOffer(sdp, hostId){
     const sig = sigRef.current
     if (!sig) return
+    hostIdRef.current = hostId
+
+    // Always hard reset before applying a new offer (fixes black screen after host restart)
+    cleanupPc()
     setNote('Verbinde...')
 
     const ice = await getIceConfig()
+
     const forceRelay = (()=>{
       const ua = navigator.userAgent || ''
       const mobile = /iPad|iPhone|iPod|Android/i.test(ua)
@@ -161,38 +170,60 @@ export default function Watch(){
       const cellular = String(conn?.type||'').toLowerCase()==='cellular'
       return mobile || cellular
     })()
+
     const pc = new RTCPeerConnection({ ...ice, iceTransportPolicy: forceRelay ? 'relay' : 'all' })
     pcRef.current = pc
 
-    pc.onconnectionstatechange = ()=>{
-      const st = pc.connectionState
-      if (st === 'failed') setNote('Verbindung fehlgeschlagen (ICE/Netz).')
-      if (st === 'connecting') setNote('Verbinde...')
-    }
-    pc.oniceconnectionstatechange = ()=>{
-      const st = pc.iceConnectionState
-      if (st === 'checking') setNote('Verbinde...')
-      if (st === 'failed') setNote('ICE fehlgeschlagen (STUN/TURN nötig).')
-    }
-
     pc.ontrack = (ev)=>{
-      const [stream] = ev.streams
-      if (videoRef.current && stream){
-        videoRef.current.srcObject = stream
-        // Autoplay with audio is often blocked by browsers.
-        // We start muted and try to play; user can unmute.
-        videoRef.current.muted = muted
-        const p = videoRef.current.play?.()
-        if (p && typeof p.then === 'function') {
-          p.then(()=>{ setNote(''); setPlayReady(true) }).catch(()=>{ setPlayReady(false); setNote('Tippe auf Play, um abzuspielen.') })
-        } else {
-          setNote('')
-          setPlayReady(true)
+      const v = videoRef.current
+      if(!v) return
+      const stream = remoteStreamRef.current
+      const src = ev.streams?.[0]
+      if(src && src.getTracks){
+        src.getTracks().forEach(t=>{
+          try{ if(!stream.getTracks().some(x=>x.id===t.id)) stream.addTrack(t) }catch{}
+        })
+      }else if(ev.track){
+        try{ if(!stream.getTracks().some(x=>x.id===ev.track.id)) stream.addTrack(ev.track) }catch{}
+      }
+
+      if(v.srcObject !== stream) v.srcObject = stream
+
+      // only attempt play after the user clicked Start at least once
+      if(started){
+        const p = v.play?.()
+        if(p && typeof p.then === 'function'){
+          p.then(()=>{ setPlayReady(true); setNote('') }).catch(()=>{ setPlayReady(false) })
+        }else{
+          setPlayReady(true); setNote('')
         }
       }
     }
+
     pc.onicecandidate = (ev)=>{
       if (ev.candidate) sig.send({ type:'webrtc-ice', code, to: hostId, candidate: ev.candidate })
+    }
+
+    pc.oniceconnectionstatechange = ()=>{
+      const st = pc.iceConnectionState
+      if(st === 'checking') setNote('Verbinde...')
+      if(st === 'connected') {
+        setNote('')
+        if(discTimerRef.current){ clearTimeout(discTimerRef.current); discTimerRef.current = null }
+      }
+      if(st === 'disconnected'){
+        if(discTimerRef.current) clearTimeout(discTimerRef.current)
+        discTimerRef.current = setTimeout(()=>{
+          try{ if(pcRef.current?.iceConnectionState === 'disconnected') hardReconnect('ice-disconnected') }catch{}
+        }, 1500)
+      }
+      if(st === 'failed') hardReconnect('ice-failed')
+    }
+
+    pc.onconnectionstatechange = ()=>{
+      const st = pc.connectionState
+      if(st === 'connecting') setNote('Verbinde...')
+      if(st === 'failed') hardReconnect('pc-failed')
     }
 
     await pc.setRemoteDescription(sdp)
@@ -201,45 +232,23 @@ export default function Watch(){
     sig.send({ type:'webrtc-answer', code, to: hostId, sdp: pc.localDescription })
   }
 
-  
-  async function ensurePlayback(){
+  async function handleStart(){
+    await startPlayback()
+    requestTheater()
+  }
+
+  async function toggleMute(){
     const v = videoRef.current
-    if(!v) return
-    try{
-      v.muted = false
-      setMuted(false)
-      await v.play?.()
-      setPlayReady(true)
-      setNote('')
-    }catch{
-      setPlayReady(false)
-      setNote('Tippe auf Play, um abzuspielen.')
+    const next = !muted
+    setMuted(next)
+    prevMutedRef.current = next
+    if(v) v.muted = next
+    if(v && !next){
+      try{ await v.play?.(); setPlayReady(true); setNote('') }catch{}
     }
   }
 
-  async function handlePlay(){
-    await ensurePlayback()
-    setTheater(true)
-    await requestFullscreen()
-  }
-
-  // Mute during pause (and restore previous mute state afterwards)
-  useEffect(()=>{
-    const v = videoRef.current
-    if(!v) return
-    if(paused){
-      prevMutedRef.current = muted
-      v.muted = true
-      setMuted(true)
-    }else{
-      const prev = prevMutedRef.current
-      v.muted = prev
-      setMuted(prev)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[paused])
-
-return (
+  return (
     <div className="card">
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
         <h2 className="h">Live</h2>
@@ -249,25 +258,22 @@ return (
         Signaling: {sigOk ? 'ok' : 'offline'} • <Link to="/">← Zurück</Link>
       </div>
 
-      <div ref={containerRef} className={"video" + (theater ? " theaterOn" : "")} style={{position:'relative'}}>
-
+      <div className={'video' + (theater ? ' theaterOn' : '')} style={{position:'relative'}}>
         <div style={{position:'absolute',top:10,right:10,display:'flex',gap:8,zIndex:6}}>
           {theater && (
             <button className="theaterClose" onClick={closeTheater} aria-label="Theater schliessen">×</button>
           )}
-          <button className="fsBtn" onClick={handlePlay} aria-label="Fullscreen">
+          <button className="fsBtn" onClick={handleStart} aria-label="Theater">
             ⤢
           </button>
         </div>
 
         {match ? (
           <>
-            {/* left info */}
             <div className="overlayLeft">
               <div className="overlaySport">{match.sport || 'Sport'}</div>
               <div className="overlayTeams">{(match.teamA||'Team A')} vs {(match.teamB||'Team B')}</div>
             </div>
-            {/* centered score (slim) */}
             <div className="overlayScore">
               {match.periodsTotal ? (
                 <div className="overlayPeriod">{Number(match.period||1)}/{Number(match.periodsTotal)}</div>
@@ -277,8 +283,6 @@ return (
           </>
         ) : null}
 
-        {/* overlay removed; match is shown above the video for better readability */}
-
         <video
           ref={videoRef}
           className="videoEl"
@@ -286,27 +290,24 @@ return (
           playsInline
           controls={false}
           muted={muted}
-          onClick={handlePlay}
-          style={{
-            width:'100%',
-            height:'100%',
-            background:'#000',
-            objectFit: theater ? 'contain' : 'cover'
-          }} />
+          onClick={theater ? undefined : handleStart}
+          style={{ width:'100%', height:'100%', background:'#000' }}
+        />
 
-        {/* Play overlay (iOS autoplay / permissions) */}
-        {(!playReady || note) && (
-          <div className="playOverlay" onClick={handlePlay}>
+        {(!started || !playReady || note) && (
+          <div className="playOverlay" onClick={handleStart}>
             <div className="playOverlayInner">
               <div className="playIcon">▶</div>
               <div style={{fontWeight:800}}>Start</div>
-              <div style={{opacity:.8,fontSize:12,marginTop:6}}>{note || 'Tippe, um Video zu starten'}</div>
+              <div style={{opacity:.8,fontSize:12,marginTop:6}}>
+                {note || 'Tippe, um Video zu starten'}
+              </div>
             </div>
           </div>
         )}
 
         {paused && (
-          <div className="pauseOverlayImg" onClick={()=>{ /* no-op */ }}>
+          <div className="pauseOverlayImg">
             <img
               src={pausePoster || pauseDefault}
               alt="Pause"
@@ -315,9 +316,10 @@ return (
           </div>
         )}
       </div>
+
       <div className="muted" style={{marginTop:10, display:'flex', justifyContent:'space-between', gap:12, alignItems:'center'}}>
         <span>Keine Wiederholung • nur live</span>
-        <button className="btn" onClick={()=>setMuted(m=>!m)} style={{padding:'8px 10px'}}>
+        <button className="btn" onClick={toggleMute} style={{padding:'8px 10px'}}>
           {muted ? 'Ton an' : 'Ton aus'}
         </button>
       </div>
