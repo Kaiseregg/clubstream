@@ -37,9 +37,15 @@ export default function Admin({ role = 'streamer' }){
   const [err, setErr] = useState('')
   const [facingMode, setFacingMode] = useState('environment')
 // 5G / NAT Fix: optional TURN-Relay erzwingen via URL ?relay=1
+// Zusätzlich: auf Mobile standardmässig Relay bevorzugen (stabiler bei 5G/NAT)
 const forceRelay = useMemo(() => {
-  try { return new URLSearchParams(window.location.search).get('relay') === '1' }
-  catch { return false }
+  const ua = navigator.userAgent || ''
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(ua)
+  try {
+    const q = new URLSearchParams(window.location.search)
+    if (q.get('relay') === '1') return true
+  } catch {}
+  return isMobile
 }, [])
 
   // Owner: manage access requests (creates streamer accounts)
@@ -235,6 +241,10 @@ const forceRelay = useMemo(() => {
     if (!sig) return
     const local = await ensureMedia()
 
+    // If same viewerId reconnects, close old pc first
+    const old = pcsRef.current.get(viewerId)
+    if (old){ try{ old.close() }catch{} pcsRef.current.delete(viewerId) }
+
    const iceCfg = await getIceConfig()
 const pc = new RTCPeerConnection({
   ...iceCfg,
@@ -275,7 +285,20 @@ pcsRef.current.set(viewerId, pc)
       if (ev.candidate) sig.send({ type:'webrtc-ice', code, to: viewerId, candidate: ev.candidate })
     }
 
-    const offer = await pc.createOffer()
+    // If ICE fails (common on mobile uplinks), re-offer with ICE restart.
+    pc.oniceconnectionstatechange = async ()=>{
+      try{
+        if (pc.iceConnectionState === 'failed'){
+          const o = await pc.createOffer({ iceRestart: true })
+          o.sdp = preferH264(o.sdp)
+          await pc.setLocalDescription(o)
+          sig.send({ type:'webrtc-offer', code, to: viewerId, sdp: pc.localDescription })
+        }
+      }catch{}
+    }
+
+    // ICE restart makes Stop/Start + mobile uplinks much more reliable
+    const offer = await pc.createOffer({ iceRestart: true })
     offer.sdp = preferH264(offer.sdp)
     await pc.setLocalDescription(offer)
     sig.send({ type:'webrtc-offer', code, to: viewerId, sdp: pc.localDescription })
