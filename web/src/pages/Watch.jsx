@@ -263,8 +263,22 @@ export default function Watch(){
     setNote('Verbinde…')
     sendJoin('user')
     startJoinLoop()
-    setTheater(true)
-    await requestFullscreen()
+  }
+
+  async function toggleFullscreen(){
+    // iOS Safari: no reliable fullscreen API for arbitrary elements → use theater mode
+    if (isIOS()) {
+      setTheater(t => !t)
+      return
+    }
+    const el = containerRef.current
+    try{
+      if (document.fullscreenElement) {
+        await document.exitFullscreen()
+      } else if (el?.requestFullscreen) {
+        await el.requestFullscreen()
+      }
+    }catch{}
   }
 
   // Mute during pause (and restore previous mute state afterwards)
@@ -299,7 +313,7 @@ return (
           {theater && (
             <button className="theaterClose" onClick={closeTheater} aria-label="Theater schliessen">×</button>
           )}
-          <button className="fsBtn" onClick={handlePlay} aria-label="Fullscreen">
+          <button className="fsBtn" onClick={toggleFullscreen} aria-label="Fullscreen">
             ⤢
           </button>
         </div>
