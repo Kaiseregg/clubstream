@@ -1,254 +1,270 @@
-// Watch.jsx – stable viewer (mobile + desktop)
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { getIceConfig } from "../lib/ice";
 import { connectSignaling } from "../lib/signaling";
 
-function normCandidate(c) {
-  if (!c) return null;
-  if (typeof c.toJSON === "function") return c.toJSON();
-  return {
-    candidate: c.candidate,
-    sdpMid: c.sdpMid ?? null,
-    sdpMLineIndex: c.sdpMLineIndex ?? null,
-    usernameFragment: c.usernameFragment ?? null,
-  };
+function isMobileUA() {
+  const ua = navigator.userAgent || "";
+  return /iphone|ipad|ipod|android/i.test(ua);
+}
+
+function setViewportVhVar() {
+  // iOS Safari: use --vh to avoid address-bar jump
+  const vh = window.innerHeight * 0.01;
+  document.documentElement.style.setProperty("--vh", `${vh}px`);
 }
 
 export default function Watch() {
   const { code } = useParams();
 
-  const wrapRef = useRef(null);
   const videoRef = useRef(null);
   const pcRef = useRef(null);
   const sigRef = useRef(null);
+  const joinTimerRef = useRef(null);
   const remoteStreamRef = useRef(new MediaStream());
 
-  const [connecting, setConnecting] = useState(false);
-  const [hasMedia, setHasMedia] = useState(false);
-  const [sigOk, setSigOk] = useState(false);
-  const [note, setNote] = useState("Tippe auf Start.");
-  const [theater, setTheater] = useState(false);
+  const startedRef = useRef(false);
+  const hasVideoRef = useRef(false);
 
-  const isIOS = useMemo(() => {
-    const ua = navigator.userAgent || "";
-    return /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+  const [note, setNote] = useState("Tippe auf Play, um zu starten.");
+  const [theater, setTheater] = useState(false);
+  const [muted, setMuted] = useState(true);
+  const [sigOk, setSigOk] = useState(false);
+
+  const forceRelay = useMemo(() => {
+    const sp = new URLSearchParams(window.location.search);
+    if (sp.get("relay") === "1") return true;
+    // Mobile networks are often symmetric NAT -> relay helps a lot
+    return isMobileUA();
   }, []);
 
-  function setVideoStream() {
-    const v = videoRef.current;
-    if (!v) return;
-    v.srcObject = remoteStreamRef.current;
-  }
-
-  async function safePlay() {
-    const v = videoRef.current;
-    if (!v) return;
-    v.playsInline = true;
-    v.muted = true; // allow autoplay on mobile
-    try { await v.play(); } catch {}
+  function stopJoinLoop() {
+    if (joinTimerRef.current) {
+      clearInterval(joinTimerRef.current);
+      joinTimerRef.current = null;
+    }
   }
 
   function cleanupPc() {
-    try { pcRef.current?.close?.(); } catch {}
+    stopJoinLoop();
+    hasVideoRef.current = false;
+
+    try {
+      if (pcRef.current) {
+        pcRef.current.ontrack = null;
+        pcRef.current.oniceconnectionstatechange = null;
+        pcRef.current.onconnectionstatechange = null;
+        pcRef.current.close();
+      }
+    } catch {}
+
     pcRef.current = null;
     remoteStreamRef.current = new MediaStream();
-    if (videoRef.current) videoRef.current.srcObject = null;
-    setHasMedia(false);
+
+    const v = videoRef.current;
+    if (v) {
+      try { v.pause(); } catch {}
+      v.srcObject = null;
+    }
   }
 
-  async function ensurePc() {
-    if (pcRef.current) return pcRef.current;
-    const pc = new RTCPeerConnection(await getIceConfig(true));
+  async function ensurePlaybackGesture() {
+    const v = videoRef.current;
+    if (!v) return;
+    v.muted = muted;
+    try {
+      await v.play();
+    } catch {
+      // ignore – user can tap again
+    }
+  }
+
+  function sendViewerJoin() {
+    if (!sigRef.current?.send) return;
+    sigRef.current.send({ type: "viewer-join", code });
+  }
+
+  function startJoinLoop(reasonText) {
+    startedRef.current = true;
+    if (reasonText) setNote(reasonText);
+
+    // Send immediately
+    sendViewerJoin();
+
+    // Keep sending until offer arrives (helps when WS reconnects on 4G/5G)
+    if (!joinTimerRef.current) {
+      joinTimerRef.current = setInterval(() => {
+        if (hasVideoRef.current) return;
+        if (!sigOk) return;
+        sendViewerJoin();
+      }, 1500);
+    }
+  }
+
+  async function acceptOffer(offerSdp) {
+    cleanupPc();
+
+    const pc = new RTCPeerConnection(await getIceConfig(forceRelay));
     pcRef.current = pc;
 
     pc.ontrack = (ev) => {
-      const s = ev.streams?.[0];
-      if (!s) return;
-      s.getTracks().forEach((t) => remoteStreamRef.current.addTrack(t));
-      setVideoStream();
-      safePlay();
-      setHasMedia(true);
-      setConnecting(false);
-      setNote("");
+      const stream = ev.streams?.[0];
+      if (!stream) return;
+
+      // Collect tracks into a dedicated MediaStream
+      stream.getTracks().forEach((t) => {
+        try { remoteStreamRef.current.addTrack(t); } catch {}
+      });
+
+      const v = videoRef.current;
+      if (v && v.srcObject !== remoteStreamRef.current) {
+        v.srcObject = remoteStreamRef.current;
+        hasVideoRef.current = true;
+        stopJoinLoop();
+        setNote("");
+        ensurePlaybackGesture();
+      }
     };
 
-    pc.onicecandidate = (ev) => {
-      const c = normCandidate(ev.candidate);
-      if (c) sigRef.current?.send?.({ type: "webrtc-ice", code, candidate: c });
+    pc.onconnectionstatechange = () => {
+      const st = pc.connectionState;
+      if (st === "connected") {
+        setNote("");
+      }
+      if (st === "failed" || st === "disconnected") {
+        // Mobile network drops -> restart join
+        cleanupPc();
+        startJoinLoop("Verbindung unterbrochen – neu verbinden…");
+      }
     };
 
     pc.oniceconnectionstatechange = () => {
       const st = pc.iceConnectionState;
       if (st === "checking") setNote("Verbinde…");
-      if (st === "connected" || st === "completed") setNote("");
       if (st === "failed" || st === "disconnected") {
-        // keep UI responsive; user can tap start again
-        setHasMedia(false);
-        setConnecting(false);
-        setNote("Verbindung unterbrochen – tippe erneut.");
+        cleanupPc();
+        startJoinLoop("Verbindung unterbrochen – neu verbinden…");
       }
     };
 
-    return pc;
-  }
-
-  function join() {
-    setConnecting(true);
-    setNote("Verbinde…");
-    safePlay();
-    sigRef.current?.send?.({ type: "viewer-join", code });
-  }
-
-  async function onOffer(msg) {
-    const desc = msg?.sdp || msg?.offer || msg?.desc;
-    if (!desc || typeof desc.sdp !== "string" || typeof desc.type !== "string") {
-      setConnecting(false);
-      setNote("Offer fehlerhaft (kein SDP). Bitte erneut starten.");
-      return;
-    }
-
-    cleanupPc();
-    const pc = await ensurePc();
-
-    await pc.setRemoteDescription(desc);
+    await pc.setRemoteDescription({ type: "offer", sdp: offerSdp });
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
-    // IMPORTANT: send plain JSON for the answer
-    sigRef.current?.send?.({
-      type: "webrtc-answer",
-      code,
-      sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp },
-    });
+    sigRef.current?.send?.({ type: "webrtc-answer", code, sdp: answer.sdp });
   }
 
-  async function onIce(msg) {
-    const c = msg?.candidate;
-    if (!c || !pcRef.current) return;
-    try { await pcRef.current.addIceCandidate(new RTCIceCandidate(c)); } catch {}
-  }
-
+  // Signaling connect
   useEffect(() => {
-    // signaling
+    setViewportVhVar();
+    window.addEventListener("resize", setViewportVhVar);
+
     sigRef.current = connectSignaling(
       async (msg) => {
-        try {
-          if (msg?.type === "webrtc-offer") await onOffer(msg);
-          if (msg?.type === "webrtc-ice") await onIce(msg);
-        } catch {
-          setConnecting(false);
-          setNote("Fehler – tippe erneut.");
+        if (msg?.type === "webrtc-offer" && msg.sdp) {
+          await acceptOffer(msg.sdp);
         }
       },
-      (st) => {
-        const ok = !!st?.ok;
+      (status) => {
+        const ok = !!status?.ok;
         setSigOk(ok);
-        // if Render is waking up, auto-join once WS becomes ok
-        if (ok) {
-          // small delay prevents "join too early" after cold start
-          setTimeout(() => {
-            if (!hasMedia) join();
-          }, 200);
+
+        if (!ok) {
+          // Keep UI ready for re-join
+          if (startedRef.current && !hasVideoRef.current) {
+            setNote("Verbindung…");
+          }
+          return;
+        }
+
+        // On reconnect, re-announce join (common on mobile)
+        if (startedRef.current && !hasVideoRef.current) {
+          sendViewerJoin();
         }
       }
     );
 
     return () => {
+      window.removeEventListener("resize", setViewportVhVar);
       cleanupPc();
-      sigRef.current?.close?.();
+      try { sigRef.current?.close?.(); } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
 
-  // keep iOS safe-area vh stable when theater mode is on
+  // Keep video element mute state in sync
   useEffect(() => {
-    function setVh() {
-      const vh = window.innerHeight * 0.01;
-      document.documentElement.style.setProperty("--vh", `${vh}px`);
-    }
-    setVh();
-    window.addEventListener("resize", setVh);
-    window.addEventListener("orientationchange", setVh);
-    return () => {
-      window.removeEventListener("resize", setVh);
-      window.removeEventListener("orientationchange", setVh);
-    };
-  }, []);
+    const v = videoRef.current;
+    if (v) v.muted = muted;
+  }, [muted]);
 
-  async function toggleFullscreen() {
-    const el = wrapRef.current;
-    if (!el) return;
-
-    // iOS Safari has flaky Fullscreen API for custom video containers → use theater mode
-    if (isIOS) {
-      setTheater((v) => !v);
-      setTimeout(safePlay, 0);
-      return;
-    }
-
-    try {
-      if (document.fullscreenElement) await document.exitFullscreen();
-      else await el.requestFullscreen();
-    } catch {
-      // fallback
-      setTheater((v) => !v);
-    }
+  function onPlayClick() {
+    // User gesture: allow play() + kick off join loop
+    ensurePlaybackGesture();
+    startJoinLoop("Verbinde…");
   }
 
-  const showOverlay = !hasMedia;
+  function toggleTheater() {
+    setTheater((v) => !v);
+    // When switching modes, keep playback alive
+    setTimeout(() => ensurePlaybackGesture(), 0);
+  }
 
   return (
-    <div className="layout">
-      <header className="topBar">
-        <div className="brand">
-          <div className="dot" />
-          <div>
-            <div className="title">Stream Live</div>
-            <div className="sub">Live Sport • ohne Replay</div>
-          </div>
-        </div>
-        <div className="topBtns">
-          <Link className="pill" to="/">Zuschauer</Link>
-          <Link className="pill" to="/admin">Admin</Link>
-        </div>
-      </header>
-
-      <div className="card">
-        <div className="cardHead">
-          <div>
-            <div className="h1">Live</div>
-            <div className="meta">
-              Signaling: {sigOk ? "ok" : "…"} • <Link to="/">← Zurück</Link>
+    <div className={"row"}>
+      <div className={"col"}>
+        <div className={"card"}>
+          <div className={"cardHead"}>
+            <div>
+              <div className={"h1"}>Live</div>
+              <div className={"sub"}>
+                Signaling: {sigOk ? "ok" : "…"} · <Link to={"/"}>← Zurück</Link>
+              </div>
             </div>
-            <div className="meta">Code: {code}</div>
+            <div className={"pill"}>Code: {code}</div>
           </div>
-        </div>
 
-        <div ref={wrapRef} className={`video ${theater ? "theaterOn" : ""}`}>
-          <video ref={videoRef} className="videoEl" playsInline />
+          <div className={"videoWrap"}>
+            <div className={"video " + (theater ? "theaterOn" : "")}
+                 style={theater ? { height: "calc(var(--vh, 1vh) * 100)" } : undefined}>
+              <video
+                ref={videoRef}
+                className={"videoEl"}
+                playsInline
+                muted={muted}
+                controls={false}
+              />
 
-          {showOverlay && (
-            <button className="playOverlay" onClick={join}>
-              <div className="playIcon">▶</div>
-              <div className="playText">Start</div>
-              <div className="playHint">{connecting ? "Verbinde…" : note}</div>
+              {!hasVideoRef.current && (
+                <button className={"playOverlay"} onClick={onPlayClick}>
+                  <div className={"playOverlayInner"}>
+                    <div className={"playIcon"}>▶</div>
+                    <div className={"playText"}>
+                      <div className={"playTitle"}>Start</div>
+                      <div className={"playHint"}>{note}</div>
+                    </div>
+                  </div>
+                </button>
+              )}
+
+              <button className={"fsBtn"} onClick={toggleTheater} title={"Vollbild"}>
+                ⤢
+              </button>
+
+              {theater && (
+                <button className={"theaterClose"} onClick={() => setTheater(false)} title={"Schliessen"}>
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className={"cardFoot"}>
+            <div className={"sub"}>Keine Wiederholung · nur live</div>
+            <button className={"btn"} onClick={() => setMuted((m) => !m)}>
+              {muted ? "Ton an" : "Ton aus"}
             </button>
-          )}
-
-          <button className="fsBtn" onClick={toggleFullscreen} aria-label="fullscreen">
-            ⤢
-          </button>
-
-          {theater && (
-            <button className="theaterClose" onClick={() => setTheater(false)} aria-label="close">
-              ✕
-            </button>
-          )}
-        </div>
-
-        <div className="foot">
-          <div className="footLeft">Keine Wiederholung • nur live</div>
+          </div>
         </div>
       </div>
     </div>

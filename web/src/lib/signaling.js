@@ -58,7 +58,7 @@ export function connectSignaling(onMessage, onStatus) {
   function open() {
     stopPing();
     try { ws?.close(); } catch {}
-    ws = new WebSocket(url);
+    ws = new WebSocket(normalizeUrl(url));
 
     ws.onopen = () => {
       retry = 0;
