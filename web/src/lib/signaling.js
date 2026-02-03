@@ -1,6 +1,23 @@
 export function getSignalingUrl() {
-  // Default to 127.0.0.1 (not localhost) to avoid IPv6/::1 issues on some Windows setups.
-  return (import.meta.env.VITE_SIGNALING_URL || "ws://127.0.0.1:8787").trim();
+  // Accept ws/wss or http/https (auto-convert). Auto-upgrade to wss when this page is https
+  // to avoid mixed-content blocking on Netlify.
+  const raw = (import.meta.env.VITE_SIGNALING_URL || "ws://127.0.0.1:8787").trim();
+  let url = raw;
+  if (/^https?:\/\//i.test(url)) {
+    url = url.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
+  }
+  // If user accidentally configured ws:// on a https page, upgrade for non-localhost.
+  try {
+    const u = new URL(url);
+    const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+    if (!isLocal && window.location.protocol === "https:" && u.protocol === "ws:") {
+      u.protocol = "wss:";
+      url = u.toString();
+    }
+  } catch {
+    // leave as-is
+  }
+  return url;
 }
 
 // Connect with a tiny send-queue + auto-reconnect.
