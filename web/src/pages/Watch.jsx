@@ -14,20 +14,17 @@ function setViewportVhVar() {
   document.documentElement.style.setProperty("--vh", `${vh}px`);
 }
 
-
-function normalizeSdpPayload(sdpLike) {
-  if (!sdpLike) return null;
-  if (typeof sdpLike === "string") return { type: "offer", sdp: sdpLike };
-  if (typeof sdpLike === "object" && typeof sdpLike.sdp === "string") {
-    return { type: sdpLike.type || "offer", sdp: sdpLike.sdp };
-  }
+function normDesc(desc, forcedType) {
+  if (!desc) return null;
+  if (typeof desc === "string") return { type: forcedType, sdp: desc };
+  if (typeof desc === "object" && desc.sdp) return desc;
   return null;
 }
 
-function normalizeCandidatePayload(candLike) {
-  if (!candLike) return null;
-  if (typeof candLike === "string") return { candidate: candLike };
-  if (typeof candLike === "object") return candLike;
+function normCandidate(c) {
+  if (!c) return null;
+  if (typeof c.toJSON === "function") return c.toJSON();
+  if (typeof c === "object" && c.candidate) return c;
   return null;
 }
 
@@ -37,6 +34,7 @@ export default function Watch() {
   const videoRef = useRef(null);
   const pcRef = useRef(null);
   const sigRef = useRef(null);
+  const hostIdRef = useRef(null);
   const joinTimerRef = useRef(null);
   const remoteStreamRef = useRef(new MediaStream());
 
@@ -51,107 +49,32 @@ export default function Watch() {
   const forceRelay = useMemo(() => {
     const sp = new URLSearchParams(window.location.search);
     if (sp.get("relay") === "1") return true;
-    // Mobile networks are often symmetric NAT -> relay helps a lot
+    // Mobile default: relay is usually more stable behind carrier NATs
     return isMobileUA();
   }, []);
 
-  function stopJoinLoop() {
-    if (joinTimerRef.current) {
-      clearInterval(joinTimerRef.current);
-      joinTimerRef.current = null;
-    }
-  }
+  async function ensurePc() {
+    if (pcRef.current) return pcRef.current;
 
-  function cleanupPc() {
-    stopJoinLoop();
-    hasVideoRef.current = false;
+    const ice = await getIceConfig({ forceRelay });
 
-    try {
-      if (pcRef.current) {
-        pcRef.current.ontrack = null;
-        pcRef.current.oniceconnectionstatechange = null;
-        pcRef.current.onconnectionstatechange = null;
-        pcRef.current.close();
-      }
-    } catch {}
-
-    pcRef.current = null;
-    remoteStreamRef.current = new MediaStream();
-
-    const v = videoRef.current;
-    if (v) {
-      try { v.pause(); } catch {}
-      v.srcObject = null;
-    }
-  }
-
-  async function ensurePlaybackGesture() {
-    const v = videoRef.current;
-    if (!v) return;
-    v.muted = muted;
-    try {
-      await v.play();
-    } catch {
-      // ignore – user can tap again
-    }
-  }
-
-  function sendViewerJoin() {
-    if (!sigRef.current?.send) return;
-    sigRef.current.send({ type: "viewer-join", code });
-  }
-
-  function startJoinLoop(reasonText) {
-    startedRef.current = true;
-    if (reasonText) setNote(reasonText);
-
-    // Send immediately
-    sendViewerJoin();
-
-    // Keep sending until offer arrives (helps when WS reconnects on 4G/5G)
-    if (!joinTimerRef.current) {
-      joinTimerRef.current = setInterval(() => {
-        if (hasVideoRef.current) return;
-        if (!sigOk) return;
-        sendViewerJoin();
-      }, 1500);
-    }
-  }
-
-  async function acceptOffer(offer, hostId) {
-    cleanupPc();
-
-    const pc = new RTCPeerConnection(await getIceConfig(forceRelay));
-    pcRef.current = pc;
+    const pc = new RTCPeerConnection({
+      iceServers: ice?.iceServers || [],
+      iceTransportPolicy: ice?.iceTransportPolicy || "all",
+    });
 
     pc.ontrack = (ev) => {
-      const stream = ev.streams?.[0];
-      if (!stream) return;
-
-      // Collect tracks into a dedicated MediaStream
-      stream.getTracks().forEach((t) => {
-        try { remoteStreamRef.current.addTrack(t); } catch {}
-      });
-
-      const v = videoRef.current;
-      if (v && v.srcObject !== remoteStreamRef.current) {
-        v.srcObject = remoteStreamRef.current;
-        hasVideoRef.current = true;
-        stopJoinLoop();
-        setNote("");
-        ensurePlaybackGesture();
-      }
+      const stream = remoteStreamRef.current;
+      ev.streams?.[0]?.getTracks?.().forEach((t) => stream.addTrack(t));
+      if (videoRef.current) videoRef.current.srcObject = stream;
+      hasVideoRef.current = true;
+      setNote("");
     };
 
-    pc.onconnectionstatechange = () => {
-      const st = pc.connectionState;
-      if (st === "connected") {
-        setNote("");
-      }
-      if (st === "failed" || st === "disconnected") {
-        // Mobile network drops -> restart join
-        cleanupPc();
-        startJoinLoop("Verbindung unterbrochen – neu verbinden…");
+    pc.onicecandidate = (ev) => {
+      const cand = normCandidate(ev.candidate);
+      if (cand) {
+        sigRef.current?.send?.({ type: "webrtc-ice", code, to: hostIdRef.current || undefined, candidate: cand });
       }
     };
 
@@ -164,24 +87,50 @@ export default function Watch() {
       }
     };
 
-    const offerInit = normalizeSdpPayload(offer);
-    if (!offerInit) throw new Error("invalid-offer");
+    pcRef.current = pc;
+    return pc;
+  }
 
-    pc.onicecandidate = (ev) => {
-      const c = ev.candidate;
-      if (!c) return;
-      if (!hostId) return;
-      try {
-        sigRef.current?.send?.({ type: "webrtc-ice", code, to: hostId, candidate: c.toJSON ? c.toJSON() : c });
-      } catch {}
-    };
+  function cleanupPc() {
+    try { joinTimerRef.current && clearInterval(joinTimerRef.current); } catch {}
+    joinTimerRef.current = null;
 
-    await pc.setRemoteDescription(offerInit);
+    try { pcRef.current?.close?.(); } catch {}
+    pcRef.current = null;
+
+    hasVideoRef.current = false;
+    remoteStreamRef.current = new MediaStream();
+    if (videoRef.current) videoRef.current.srcObject = null;
+  }
+
+  function sendViewerJoin() {
+    sigRef.current?.send?.({ type: "viewer-join", code });
+  }
+
+  function startJoinLoop(msg) {
+    setNote(msg || "Verbinde…");
+    sendViewerJoin();
+    try { joinTimerRef.current && clearInterval(joinTimerRef.current); } catch {}
+    joinTimerRef.current = setInterval(() => {
+      if (!hasVideoRef.current) sendViewerJoin();
+    }, 2500);
+  }
+
+  async function acceptOffer(rawOffer) {
+    const offer = normDesc(rawOffer, "offer");
+    if (!offer?.sdp) return;
+
+    const pc = await ensurePc();
+
+    // Accept both {type:'offer',sdp:'...'} and raw sdp string.
+    await pc.setRemoteDescription(offer);
+
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
-    sigRef.current?.send?.({ type: "webrtc-answer", code, to: hostId, sdp: pc.localDescription || answer });
-}
+    // Send full localDescription (includes type + sdp) so Admin can setRemoteDescription directly.
+    sigRef.current?.send?.({ type: "webrtc-answer", code, sdp: pc.localDescription });
+  }
 
   // Signaling connect
   useEffect(() => {
@@ -191,32 +140,27 @@ export default function Watch() {
     sigRef.current = connectSignaling(
       async (msg) => {
         if (msg?.type === "webrtc-offer" && msg.sdp) {
-          // msg.sdp can be a string or {type,sdp}; host id is msg.from
-          await acceptOffer(msg.sdp, msg.from);
+          // remember who sent the offer so we can send ICE back
+          hostIdRef.current = msg.from || msg.viewerId || msg.hostId || null;
+          await acceptOffer(msg.sdp);
         }
         if (msg?.type === "webrtc-ice" && msg.candidate) {
           const pc = pcRef.current;
-          const cand = normalizeCandidatePayload(msg.candidate);
+          const cand = normCandidate(msg.candidate);
           if (pc && cand) {
             try { await pc.addIceCandidate(cand); } catch {}
           }
         }
         if (msg?.type === "ended") {
           cleanupPc();
-          startJoinLoop("Verbindung unterbrochen – neu verbinden…");
+          setNote("Stream beendet.");
         }
       },
       (status) => {
         const ok = !!status?.ok;
         setSigOk(ok);
 
-        if (!ok) {
-          // Keep UI ready for re-join
-          if (startedRef.current && !hasVideoRef.current) {
-            setNote("Verbindung…");
-          }
-          return;
-        }
+        if (!ok) return;
 
         // On reconnect, re-announce join (common on mobile)
         if (startedRef.current && !hasVideoRef.current) {
@@ -231,81 +175,70 @@ export default function Watch() {
       try { sigRef.current?.close?.(); } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code]);
+  }, []);
 
-  // Keep video element mute state in sync
-  useEffect(() => {
-    const v = videoRef.current;
-    if (v) v.muted = muted;
-  }, [muted]);
-
-  function onPlayClick() {
-    // User gesture: allow play() + kick off join loop
-    ensurePlaybackGesture();
-    startJoinLoop("Verbinde…");
+  // Autoplay helper: user gesture required on iOS; we still try.
+  async function tryPlay() {
+    try {
+      if (videoRef.current) await videoRef.current.play();
+    } catch {}
   }
 
-  function toggleTheater() {
-    setTheater((v) => !v);
-    // When switching modes, keep playback alive
-    setTimeout(() => ensurePlaybackGesture(), 0);
+  const canFullscreen = useMemo(() => {
+    const v = videoRef.current;
+    return !!(v && (v.requestFullscreen || v.webkitEnterFullscreen));
+  }, [videoRef.current]);
+
+  async function toggleFullscreen() {
+    const v = videoRef.current;
+    if (!v) return;
+
+    // iOS Safari uses webkitEnterFullscreen() (native player)
+    if (v.webkitEnterFullscreen) {
+      try { v.webkitEnterFullscreen(); } catch {}
+      return;
+    }
+
+    if (document.fullscreenElement) {
+      try { await document.exitFullscreen(); } catch {}
+      return;
+    }
+    try { await v.requestFullscreen(); } catch {}
   }
 
   return (
-    <div className={"row"}>
-      <div className={"col"}>
-        <div className={"card"}>
-          <div className={"cardHead"}>
-            <div>
-              <div className={"h1"}>Live</div>
-              <div className={"sub"}>
-                Signaling: {sigOk ? "ok" : "…"} · <Link to={"/"}>← Zurück</Link>
-              </div>
-            </div>
-            <div className={"pill"}>Code: {code}</div>
+    <div className="wrap">
+      <div className="card">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <h2 style={{ margin: 0 }}>Zuschauer</h2>
+            <div className="muted">Code: <strong>{code}</strong> • Signaling: <strong style={{ color: sigOk ? "#b6ffbf" : "#ffb3b3" }}>{sigOk ? "ok" : "offline"}</strong></div>
           </div>
-
-          <div className={"videoWrap"}>
-            <div className={"video " + (theater ? "theaterOn" : "")}
-                 style={theater ? { height: "calc(var(--vh, 1vh) * 100)" } : undefined}>
-              <video
-                ref={videoRef}
-                className={"videoEl"}
-                playsInline
-                muted={muted}
-                controls={false}
-              />
-
-              {!hasVideoRef.current && (
-                <button className={"playOverlay"} onClick={onPlayClick}>
-                  <div className={"playOverlayInner"}>
-                    <div className={"playIcon"}>▶</div>
-                    <div className={"playText"}>
-                      <div className={"playTitle"}>Start</div>
-                      <div className={"playHint"}>{note}</div>
-                    </div>
-                  </div>
-                </button>
-              )}
-
-              <button className={"fsBtn"} onClick={toggleTheater} title={"Vollbild"}>
-                ⤢
-              </button>
-
-              {theater && (
-                <button className={"theaterClose"} onClick={() => setTheater(false)} title={"Schliessen"}>
-                  ✕
-                </button>
-              )}
-            </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button className="btn btnPrimary" onClick={() => { startedRef.current = true; startJoinLoop("Verbinde…"); tryPlay(); }}>Play</button>
+            <button className="btn" onClick={() => setTheater((s) => !s)}>{theater ? "Normal" : "Theater"}</button>
+            <button className="btn" onClick={() => setMuted((m) => !m)}>{muted ? "Ton an" : "Ton aus"}</button>
+            {canFullscreen && <button className="btn" onClick={toggleFullscreen}>Fullscreen</button>}
           </div>
+        </div>
 
-          <div className={"cardFoot"}>
-            <div className={"sub"}>Keine Wiederholung · nur live</div>
-            <button className={"btn"} onClick={() => setMuted((m) => !m)}>
-              {muted ? "Ton an" : "Ton aus"}
-            </button>
-          </div>
+        {note && <div className="muted" style={{ marginTop: 10 }}>{note}</div>}
+
+        <div className={"videoStage" + (theater ? " theater" : "")} style={{ marginTop: 14 }}>
+          <video
+            ref={videoRef}
+            className="videoEl"
+            playsInline
+            autoPlay
+            muted={muted}
+            controls={false}
+            onClick={tryPlay}
+          />
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14, flexWrap: "wrap", gap: 10 }}>
+          <Link className="btn" to="/">Zur Startseite</Link>
+          <div className="muted">Tip: iPhone → zuerst Play tippen, dann Fullscreen.</div>
         </div>
       </div>
     </div>
