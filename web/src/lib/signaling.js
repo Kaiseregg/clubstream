@@ -20,6 +20,29 @@ export function getSignalingUrl() {
   return url;
 }
 
+function normalizeUrl(raw) {
+  // Ensure we connect to the websocket endpoint (/ws) even if env only contains the host.
+  // Keeps query params intact.
+  const s = String(raw || "").trim();
+  if (!s) return s;
+
+  try {
+    const u = new URL(s);
+    // If already points to /ws or any explicit path, keep it.
+    const path = (u.pathname || "").replace(/\/+$/, "");
+    if (path === "" || path === "/") {
+      u.pathname = "/ws";
+    }
+    return u.toString();
+  } catch {
+    // Fallback: append /ws if it looks like a host-only url
+    if (/^wss?:\/\//i.test(s) && !/\/ws(\?|#|$)/i.test(s) && !/\/[^/?#]+/i.test(s.replace(/^wss?:\/\//i,""))) {
+      return s.replace(/\/+$/, "") + "/ws";
+    }
+    return s;
+  }
+}
+
 // Connect with a tiny send-queue + auto-reconnect.
 // Mobile 4G/5G can drop WebSockets briefly; reconnecting keeps stream stable.
 export function connectSignaling(onMessage, onStatus) {
@@ -62,7 +85,7 @@ export function connectSignaling(onMessage, onStatus) {
 
     ws.onopen = () => {
       retry = 0;
-      notify({ ok: true, url });
+      notify({ ok: true, url: normalizeUrl(url) });
       startPing();
       // flush queue
       while (queue.length) {
@@ -72,13 +95,13 @@ export function connectSignaling(onMessage, onStatus) {
 
     ws.onclose = () => {
       stopPing();
-      notify({ ok: false, url });
+      notify({ ok: false, url: normalizeUrl(url) });
       scheduleReconnect();
     };
 
     ws.onerror = () => {
       // onclose will follow; just notify once.
-      notify({ ok: false, url, error: true });
+      notify({ ok: false, url: normalizeUrl(url), error: true });
     };
 
     ws.onmessage = (ev) => {
@@ -104,7 +127,7 @@ export function connectSignaling(onMessage, onStatus) {
   return {
     get ws() { return ws; },
     send,
-    url,
+    url: normalizeUrl(url),
     close: () => {
       closed = true;
       stopPing();

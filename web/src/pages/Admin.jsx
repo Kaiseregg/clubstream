@@ -28,6 +28,21 @@ function preferH264(sdp){
 }
 
 
+
+function normDesc(desc, forcedType){
+  if(!desc) return null
+  if(typeof desc === 'string') return { type: forcedType, sdp: desc }
+  if(typeof desc === 'object' && desc.sdp) return desc
+  return null
+}
+
+function normCandidate(c){
+  if(!c) return null
+  if(typeof c.toJSON === 'function') return c.toJSON()
+  if(typeof c === 'object' && c.candidate) return c
+  return null
+}
+
 // Ice servers are fetched from /.netlify/functions/ice-servers (Cloudflare TURN when configured).
 
 export default function Admin({ role = 'streamer' }){
@@ -206,11 +221,13 @@ const forceRelay = useMemo(() => {
     }
     if (msg.type === 'webrtc-answer'){
       const pc = pcsRef.current.get(msg.from)
-      if (pc && msg.sdp) pc.setRemoteDescription(msg.sdp).catch(()=>{})
+      const ans = normDesc(msg.sdp, 'answer')
+      if (pc && ans) pc.setRemoteDescription(ans).catch(()=>{})
     }
     if (msg.type === 'webrtc-ice'){
       const pc = pcsRef.current.get(msg.from)
-      if (pc && msg.candidate) pc.addIceCandidate(msg.candidate).catch(()=>{})
+      const cand = normCandidate(msg.candidate)
+      if (pc && cand) pc.addIceCandidate(cand).catch(()=>{})
     }
     if (msg.type === 'viewer-left'){
       const pc = pcsRef.current.get(msg.viewerId)
