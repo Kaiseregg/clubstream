@@ -19,6 +19,7 @@ export default function Watch(){
   const containerRef = useRef(null)
   const sigRef = useRef(null)
   const pcRef = useRef(null)
+  const iceRestartTimerRef = useRef(null)
   const joinTimerRef = useRef(null)
   const lastJoinRef = useRef(0)
 
@@ -114,7 +115,14 @@ export default function Watch(){
   }
 
   useEffect(()=>{
-    const sig = connectSignaling(onSigMsg, (s)=>setSigOk(!!s.ok))
+    const sig = connectSignaling(onSigMsg, (s)=>{
+      setSigOk(!!s.ok)
+      if (s?.ok && started.current && !hasVideoRef.current){
+        // WS reconnected → re-join so host can re-send an offer
+        sendJoin('ws-reconnect')
+        startJoinLoop()
+      }
+    })
     sigRef.current = sig
     sendJoin('init')
     startJoinLoop()
@@ -200,17 +208,37 @@ export default function Watch(){
     pc.onconnectionstatechange = ()=>{
       const st = pc.connectionState
       if (st === 'failed') setNote('Verbindung fehlgeschlagen (ICE/Netz).')
-      if (st === 'connecting') setNote('Verbinde...')
-    }
-    pc.oniceconnectionstatechange = ()=>{
+      if (st === 'connpc.oniceconnectionstatechange = ()=>{
       const st = pc.iceConnectionState
       if (st === 'checking') setNote('Verbinde…')
-      if (st === 'connected' || st === 'completed') { setNote(''); }
-      if (st === 'failed' || st === 'disconnected') {
+      if (st === 'connected' || st === 'completed') { 
+        setNote(''); 
+        // connection recovered – cancel any pending restart
+        if (iceRestartTimerRef.current) { clearTimeout(iceRestartTimerRef.current); iceRestartTimerRef.current = null }
+      }
+      if (st === 'failed') {
+        // hard fail → restart
         setNote('Verbindung unterbrochen – neu verbinden…')
         try{ pc.close() }catch{}
         pcRef.current = null
         startJoinLoop()
+      }
+      if (st === 'disconnected') {
+        // 'disconnected' can be temporary on mobile networks; wait a bit before restarting
+        setNote('Verbindung schwach – prüfe…')
+        if (!iceRestartTimerRef.current){
+          iceRestartTimerRef.current = setTimeout(()=>{
+            iceRestartTimerRef.current = null
+            if (!pcRef.current) return
+            const cur = pcRef.current.iceConnectionState
+            if (cur === 'disconnected') {
+              setNote('Verbindung unterbrochen – neu verbinden…')
+              try{ pcRef.current.close() }catch{}
+              pcRef.current = null
+              startJoinLoop()
+            }
+          }, 3000)
+        }
       }
     }
 
@@ -265,12 +293,11 @@ export default function Watch(){
     startJoinLoop()
   }
 
-  async function toggleFullscreen(){
-    // iOS Safari: no reliable fullscreen API for arbitrary elements → use theater mode
-    if (isIOS()) {
-      setTheater(t => !t)
-      return
-    }
+  function toggleFullscreen(){
+    // Use the same "theater mode" on ALL devices.
+    // It looks consistent, works on iOS, and avoids Fullscreen API layout glitches.
+    setTheater(t => !t)
+  }
     const el = containerRef.current
     try{
       if (document.fullscreenElement) {
