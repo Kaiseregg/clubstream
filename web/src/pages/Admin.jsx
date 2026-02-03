@@ -282,7 +282,12 @@ pcsRef.current.set(viewerId, pc)
     }
 
     pc.onicecandidate = (ev)=>{
-      if (ev.candidate) sig.send({ type:'webrtc-ice', code, to: viewerId, candidate: ev.candidate })
+      if (!ev.candidate) return
+      // IMPORTANT: send plain JSON. RTCIceCandidate is not reliably JSON-serializable.
+      const c = (typeof ev.candidate.toJSON === 'function')
+        ? ev.candidate.toJSON()
+        : { candidate: ev.candidate.candidate, sdpMid: ev.candidate.sdpMid, sdpMLineIndex: ev.candidate.sdpMLineIndex }
+      sig.send({ type:'webrtc-ice', code, to: viewerId, candidate: c })
     }
 
     // If ICE fails (common on mobile uplinks), re-offer with ICE restart.
@@ -292,7 +297,13 @@ pcsRef.current.set(viewerId, pc)
           const o = await pc.createOffer({ iceRestart: true })
           o.sdp = preferH264(o.sdp)
           await pc.setLocalDescription(o)
-          sig.send({ type:'webrtc-offer', code, to: viewerId, sdp: pc.localDescription })
+          // IMPORTANT: send plain JSON. RTCSessionDescription is not reliably JSON-serializable.
+          sig.send({
+            type:'webrtc-offer',
+            code,
+            to: viewerId,
+            sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp }
+          })
         }
       }catch{}
     }
@@ -301,7 +312,13 @@ pcsRef.current.set(viewerId, pc)
     const offer = await pc.createOffer({ iceRestart: true })
     offer.sdp = preferH264(offer.sdp)
     await pc.setLocalDescription(offer)
-    sig.send({ type:'webrtc-offer', code, to: viewerId, sdp: pc.localDescription })
+    // IMPORTANT: send plain JSON. RTCSessionDescription is not reliably JSON-serializable.
+    sig.send({
+      type:'webrtc-offer',
+      code,
+      to: viewerId,
+      sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp }
+    })
   }
 
   async function uploadPauseImage(file){
