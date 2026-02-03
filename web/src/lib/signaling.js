@@ -3,10 +3,12 @@ export function getSignalingUrl() {
   // to avoid mixed-content blocking on Netlify.
   const raw = (import.meta.env.VITE_SIGNALING_URL || "ws://127.0.0.1:8787").trim();
   let url = raw;
+
   if (/^https?:\/\//i.test(url)) {
     url = url.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
   }
-  // If user accidentally configured ws:// on a https page, upgrade for non-localhost.
+
+  // If user configured ws:// on a https page, upgrade for non-localhost.
   try {
     const u = new URL(url);
     const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1";
@@ -17,41 +19,44 @@ export function getSignalingUrl() {
   } catch {
     // leave as-is
   }
+
   return url;
 }
 
-function normalizeUrl(raw) {
-  // Ensure we connect to the websocket endpoint (/ws) even if env only contains the host.
-  // Keeps query params intact.
-  const s = String(raw || "").trim();
-  if (!s) return s;
+function ensureWsPath(url, wantWsPath = true) {
+  // wantWsPath=true -> ensure /ws suffix
+  // wantWsPath=false -> ensure NO /ws suffix
+  const u = new URL(url);
 
-  try {
-    const u = new URL(s);
-    // If already points to /ws or any explicit path, keep it.
-    const path = (u.pathname || "").replace(/\/+$/, "");
-    if (path === "" || path === "/") {
-      u.pathname = "/ws";
-    }
-    return u.toString();
-  } catch {
-    // Fallback: append /ws if it looks like a host-only url
-    if (/^wss?:\/\//i.test(s) && !/\/ws(\?|#|$)/i.test(s) && !/\/[^/?#]+/i.test(s.replace(/^wss?:\/\//i,""))) {
-      return s.replace(/\/+$/, "") + "/ws";
-    }
-    return s;
+  // normalize trailing slash
+  const p = u.pathname.replace(/\/+$/, "");
+  const hasWs = p === "/ws";
+
+  if (wantWsPath) {
+    if (!hasWs) u.pathname = (p && p !== "/" ? p : "") + "/ws";
+  } else {
+    if (hasWs) u.pathname = "/";
   }
+
+  // clear any fragment; keep query
+  u.hash = "";
+  return u.toString();
 }
 
 // Connect with a tiny send-queue + auto-reconnect.
 // Mobile 4G/5G can drop WebSockets briefly; reconnecting keeps stream stable.
 export function connectSignaling(onMessage, onStatus) {
-  const url = getSignalingUrl();
+  const baseUrl = getSignalingUrl();
   let ws = null;
   let closed = false;
   const queue = [];
   let retry = 0;
   let pingTimer = null;
+
+  // Some hosting setups accept WS at root (/) even if you *think* it is /ws.
+  // We try /ws first, then fall back to root once, then keep using the working one.
+  let preferWsPath = true;      // start with /ws
+  let triedFallback = false;    // only flip once per session
 
   const notify = (s) => { try { onStatus?.(s); } catch {} };
 
@@ -72,7 +77,7 @@ export function connectSignaling(onMessage, onStatus) {
   function scheduleReconnect() {
     if (closed) return;
     retry = Math.min(retry + 1, 8);
-    const delay = Math.min(5000, 400 + retry * 400);
+    const delay = Math.min(6000, 500 + retry * 500);
     setTimeout(() => {
       if (!closed) open();
     }, delay);
@@ -81,11 +86,21 @@ export function connectSignaling(onMessage, onStatus) {
   function open() {
     stopPing();
     try { ws?.close(); } catch {}
-    ws = new WebSocket(normalizeUrl(url));
+
+    const targetUrl = ensureWsPath(baseUrl, preferWsPath);
+
+    // optimistic status: connecting (don't show "ok" until onopen)
+    notify({ ok: false, connecting: true, url: targetUrl });
+
+    let opened = false;
+
+    ws = new WebSocket(targetUrl);
 
     ws.onopen = () => {
+      opened = true;
       retry = 0;
-      notify({ ok: true, url: normalizeUrl(url) });
+      triedFallback = false; // reset once we have a good connection
+      notify({ ok: true, url: targetUrl });
       startPing();
       // flush queue
       while (queue.length) {
@@ -93,15 +108,26 @@ export function connectSignaling(onMessage, onStatus) {
       }
     };
 
-    ws.onclose = () => {
-      stopPing();
-      notify({ ok: false, url: normalizeUrl(url) });
-      scheduleReconnect();
+    ws.onerror = () => {
+      // We'll handle fallback/reconnect in onclose (more reliable signal).
     };
 
-    ws.onerror = () => {
-      // onclose will follow; just notify once.
-      notify({ ok: false, url: normalizeUrl(url), error: true });
+    ws.onclose = (ev) => {
+      stopPing();
+      if (closed) return;
+
+      // If we never opened, try fallback once (switch /ws <-> /).
+      if (!opened && !triedFallback) {
+        triedFallback = true;
+        preferWsPath = !preferWsPath;
+        const alt = ensureWsPath(baseUrl, preferWsPath);
+        notify({ ok: false, url: targetUrl, error: `ws failed, trying ${alt}` });
+        open();
+        return;
+      }
+
+      notify({ ok: false, url: targetUrl, error: `ws closed (${ev.code || 0})` });
+      scheduleReconnect();
     };
 
     ws.onmessage = (ev) => {
@@ -127,7 +153,7 @@ export function connectSignaling(onMessage, onStatus) {
   return {
     get ws() { return ws; },
     send,
-    url: normalizeUrl(url),
+    baseUrl,
     close: () => {
       closed = true;
       stopPing();
