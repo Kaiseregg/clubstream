@@ -76,6 +76,29 @@ wss.on('connection', (ws) => {
   clients.set(ws, { id });
   safeSend(ws, { type: 'hello', id });
 
+  // ---- DEBUG LOGGING (Render -> Logs) ----
+  // If streaming fails (especially across 4G/5G), the first question is:
+  // do we see join/offer/answer/ice messages flowing?
+  const log = (event, extra = {}) => {
+    try {
+      const code = extra.code || clients.get(ws)?.code || '';
+      const role = extra.role || clients.get(ws)?.role || '';
+      const to = extra.to || '';
+      const viewerId = extra.viewerId || '';
+      console.log(
+        '[signaling]',
+        `id=${id}`,
+        role ? `role=${role}` : '',
+        code ? `code=${code}` : '',
+        to ? `to=${to}` : '',
+        viewerId ? `viewer=${viewerId}` : '',
+        event
+      );
+    } catch {
+      // ignore logging failures
+    }
+  };
+
   ws.on('message', (buf) => {
     let msg;
     try {
@@ -90,6 +113,10 @@ wss.on('connection', (ws) => {
     const type = msg?.type;
     const code = String(msg?.code || '').trim();
 
+    // High-signal trace for debugging WebRTC flows.
+    // (Open Render -> Service -> Logs, then search for: host-join / viewer-join / webrtc-offer / webrtc-answer / webrtc-ice)
+    log(`recv:${type || 'unknown'}`, { code, role: meta.role, to: msg?.to, from: msg?.from });
+
     if (type === 'host-join') {
       if (!code) return safeSend(ws, { type: 'error', message: 'missing-code' });
       const room = getRoom(code);
@@ -97,6 +124,9 @@ wss.on('connection', (ws) => {
         return safeSend(ws, { type: 'error', message: 'host-exists', code });
       }
       room.hostId = meta.id;
+      meta.role = 'host';
+      meta.code = code;
+      log('host-joined', { code, hostId: meta.id, viewers: room.viewers.size });
       safeSend(ws, { type: 'host-joined', code });
       for (const vid of room.viewers) safeSend(ws, { type: 'viewer-joined', code, viewerId: vid });
 
@@ -119,11 +149,17 @@ wss.on('connection', (ws) => {
         return safeSend(ws, { type: 'viewer-denied', code, reason: 'viewer-limit', max: MAX_VIEWERS });
       }
       room.viewers.add(meta.id);
+      meta.role = 'viewer';
+      meta.code = code;
+      log('viewer-joined', { code, viewerId: meta.id, hostPresent: !!room.hostId, viewers: room.viewers.size });
       safeSend(ws, { type: 'viewer-joined-ok', code, viewerId: meta.id, hostPresent: !!room.hostId });
       if (room.match) safeSend(ws, { type: 'match-state', code, match: room.match, paused: room.paused, pauseImageUrl: room.pauseImageUrl });
       safeSend(ws, { type: 'pause-state', code, paused: room.paused, pauseImageUrl: room.pauseImageUrl });
       const hws = room.hostId ? findWsById(room.hostId) : null;
-      if (hws) safeSend(hws, { type: 'viewer-joined', code, viewerId: meta.id });
+      if (hws) {
+        log('relay:viewer-joined->host', { code, to: room.hostId, viewerId: meta.id });
+        safeSend(hws, { type: 'viewer-joined', code, viewerId: meta.id });
+      }
       return;
     }
 
@@ -175,6 +211,7 @@ wss.on('connection', (ws) => {
       if (!to) return;
       const target = findWsById(to);
       if (!target) return safeSend(ws, { type: 'error', message: 'peer-not-found', to });
+      log(`relay:${type}`, { to });
       safeSend(target, { ...msg, from: meta.id });
       return;
     }
