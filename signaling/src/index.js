@@ -34,7 +34,7 @@ function uid() {
 }
 
 function safeSend(ws, obj) {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
+  if (ws.readyState === 1 /* WebSocket.OPEN */) ws.send(JSON.stringify(obj));
 }
 
 function findWsById(id) {
