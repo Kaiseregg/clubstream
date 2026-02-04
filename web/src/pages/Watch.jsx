@@ -104,7 +104,13 @@ export default function Watch() {
 
   async function onPlayClick() {
     await ensurePlaybackGesture();
-    if (!startedRef.current) startJoinLoop("Tippe auf Play, um zu starten.");
+    if (startedRef.current) return;
+    startedRef.current = true;
+    setNote("Verbindung…");
+    // ensure we are joined (so server can tell us hostId + match state)
+    sendViewerJoin();
+    // start offer (viewer-initiated)
+    await startOffer();
   }
 
   async function requestFs() {
@@ -122,21 +128,25 @@ export default function Watch() {
     }
   }
 
-  async function acceptOffer(offerSdp) {
+  async function startOffer() {
+    // Viewer starts: create pc, create OFFER, send to broadcaster (host)
     cleanupPc();
-
     const pc = new RTCPeerConnection(await getIceConfig(forceRelay));
     pcRef.current = pc;
 
-    // Trickle ICE back to broadcaster (critical for NAT / 4G / 5G)
+    // We only receive media
+    try { pc.addTransceiver("video", { direction: "recvonly" }); } catch {}
+    try { pc.addTransceiver("audio", { direction: "recvonly" }); } catch {}
+
     pc.onicecandidate = (ev) => {
       if (!ev.candidate) return;
+      const to = broadcasterIdRef.current;
+      if (!to) return; // will retry once hostId is known
       sigRef.current?.send?.({
         type: "webrtc-ice",
         origin: "viewer",
         code,
-        // Signaling server routes by "to" (sender is provided as "from")
-        ...(broadcasterIdRef.current ? { to: broadcasterIdRef.current } : {}),
+        to,
         candidate: ev.candidate,
       });
     };
@@ -144,8 +154,6 @@ export default function Watch() {
     pc.ontrack = (ev) => {
       const stream = ev.streams?.[0];
       if (!stream) return;
-
-      // Collect tracks into a dedicated MediaStream
       stream.getTracks().forEach((t) => {
         try { remoteStreamRef.current.addTrack(t); } catch {}
       });
@@ -166,40 +174,47 @@ export default function Watch() {
         setNote("");
       }
       if (st === "failed" || st === "disconnected") {
-        // Mobile network drops -> restart join
+        // Re-try by restarting the join loop (user keeps controls)
+        hasVideoRef.current = false;
+        startedRef.current = false;
         cleanupPc();
-        startJoinLoop("Verbindung unterbrochen – neu verbinden…");
+        startJoinLoop("Verbindung…");
       }
     };
 
-    pc.oniceconnectionstatechange = () => {
-      const st = pc.iceConnectionState;
-      if (st === "checking") setNote("Verbinde…");
-      if (st === "failed" || st === "disconnected") {
-        cleanupPc();
-        startJoinLoop("Verbindung unterbrochen – neu verbinden…");
-      }
-    };
+    // Need hostId to route signaling
+    const to = broadcasterIdRef.current;
+    if (!to) {
+      // Ask server again for host availability
+      sendViewerJoin();
+      startJoinLoop("Verbindung…");
+      return;
+    }
 
-    // The admin may (by mistake or older builds) send either:
-    // - a raw SDP string
-    // - an RTCSessionDescriptionInit ({type,sdp})
-    // If we blindly put an object into the sdp field, the browser tries to parse "[object Object]".
-    const offerDesc =
-      offerSdp && typeof offerSdp === "object"
-        ? offerSdp
-        : { type: "offer", sdp: String(offerSdp || "") };
-    await pc.setRemoteDescription(offerDesc);
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
 
     sigRef.current?.send?.({
-      type: "webrtc-answer",
+      type: "webrtc-offer",
       origin: "viewer",
       code,
-      ...(broadcasterIdRef.current ? { to: broadcasterIdRef.current } : {}),
-      sdp: answer.sdp,
+      to,
+      sdp: pc.localDescription?.sdp || offer.sdp,
     });
+  }
+
+  async function acceptAnswer(answerSdp) {
+    const pc = pcRef.current;
+    if (!pc) return;
+    const answerDesc =
+      typeof answerSdp === "object"
+        ? answerSdp
+        : { type: "answer", sdp: String(answerSdp || "") };
+    try {
+      await pc.setRemoteDescription(answerDesc);
+    } catch {
+      // ignore
+    }
   }
 
   // Signaling connect
@@ -209,12 +224,21 @@ export default function Watch() {
 
     sigRef.current = connectSignaling(
       async (msg) => {
-        if (msg?.type === "webrtc-offer" && msg.sdp) {
-          broadcasterIdRef.current = msg.from || null;
-          await acceptOffer(msg.sdp);
+        // Cache host id when available
+        if (msg?.type === "viewer-joined-ok" && msg.hostId) {
+          broadcasterIdRef.current = msg.hostId;
+        }
+        if (msg?.type === "host-available" && msg.hostId) {
+          broadcasterIdRef.current = msg.hostId;
         }
 
-        // Trickle ICE from broadcaster
+        // Viewer-initiated WebRTC: we create OFFER on Play, broadcaster replies with ANSWER.
+        if (msg?.type === "webrtc-answer" && msg.sdp) {
+          broadcasterIdRef.current = msg.from || broadcasterIdRef.current || null;
+          await acceptAnswer(msg.sdp);
+        }
+
+        // Trickle ICE from broadcaster -> viewer
         if (msg?.type === "webrtc-ice" && msg.candidate && pcRef.current) {
           // Ignore our own echoed ICE (some signaling setups broadcast to sender)
           if (msg.origin === "viewer") return;

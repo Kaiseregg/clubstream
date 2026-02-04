@@ -134,7 +134,7 @@ wss.on('connection', (ws) => {
       for (const vid of room.viewers) {
         const vws = findWsById(vid);
         if (vws) {
-          safeSend(vws, { type: 'host-available', code });
+          safeSend(vws, { type: 'host-available', code, hostId: meta.id });
           if (room.match) safeSend(vws, { type: 'match-state', code, match: room.match, paused: room.paused, pauseImageUrl: room.pauseImageUrl });
           safeSend(vws, { type: 'pause-state', code, paused: room.paused, pauseImageUrl: room.pauseImageUrl });
         }
@@ -152,7 +152,7 @@ wss.on('connection', (ws) => {
       meta.role = 'viewer';
       meta.code = code;
       log('viewer-joined', { code, viewerId: meta.id, hostPresent: !!room.hostId, viewers: room.viewers.size });
-      safeSend(ws, { type: 'viewer-joined-ok', code, viewerId: meta.id, hostPresent: !!room.hostId });
+      safeSend(ws, { type: 'viewer-joined-ok', code, viewerId: meta.id, hostPresent: !!room.hostId, hostId: room.hostId || null });
       if (room.match) safeSend(ws, { type: 'match-state', code, match: room.match, paused: room.paused, pauseImageUrl: room.pauseImageUrl });
       safeSend(ws, { type: 'pause-state', code, paused: room.paused, pauseImageUrl: room.pauseImageUrl });
       const hws = room.hostId ? findWsById(room.hostId) : null;
