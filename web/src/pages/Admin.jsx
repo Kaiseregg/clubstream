@@ -294,7 +294,8 @@ pcsRef.current.set(viewerId, pc)
           const o = await pc.createOffer({ iceRestart: true })
           o.sdp = preferH264(o.sdp)
           await pc.setLocalDescription(o)
-          sig.send({ type:'webrtc-offer', code, to: viewerId, sdp: pc.localDescription })
+          // Send SDP as string to avoid watcher parsing errors ([object Object])
+          sig.send({ type:'webrtc-offer', code, to: viewerId, sdp: pc.localDescription?.sdp || '' })
         }
       }catch{}
     }
@@ -303,7 +304,8 @@ pcsRef.current.set(viewerId, pc)
     const offer = await pc.createOffer({ iceRestart: true })
     offer.sdp = preferH264(offer.sdp)
     await pc.setLocalDescription(offer)
-    sig.send({ type:'webrtc-offer', code, to: viewerId, sdp: pc.localDescription })
+    // Send SDP as string to avoid watcher parsing errors ([object Object])
+    sig.send({ type:'webrtc-offer', code, to: viewerId, sdp: pc.localDescription?.sdp || '' })
   }
 
   async function uploadPauseImage(file){
