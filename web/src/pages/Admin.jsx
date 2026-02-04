@@ -209,6 +209,8 @@ const forceRelay = useMemo(() => {
       if (pc && msg.sdp) pc.setRemoteDescription(msg.sdp).catch(()=>{})
     }
     if (msg.type === 'webrtc-ice'){
+      // Ignore our own ICE candidates if the signaling server echoes them.
+      if (msg.origin === 'broadcaster') return
       const pc = pcsRef.current.get(msg.from)
       if (pc && msg.candidate) pc.addIceCandidate(msg.candidate).catch(()=>{})
     }
@@ -282,7 +284,7 @@ pcsRef.current.set(viewerId, pc)
     }
 
     pc.onicecandidate = (ev)=>{
-      if (ev.candidate) sig.send({ type:'webrtc-ice', code, to: viewerId, candidate: ev.candidate })
+      if (ev.candidate) sig.send({ type:'webrtc-ice', origin:'broadcaster', code, to: viewerId, candidate: ev.candidate })
     }
 
     // If ICE fails (common on mobile uplinks), re-offer with ICE restart.
