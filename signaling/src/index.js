@@ -34,7 +34,16 @@ function uid() {
 }
 
 function safeSend(ws, obj) {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
+  // 'ws.OPEN' is NOT defined on instances; OPEN is a constant on the WebSocket class.
+  // Use the numeric constant instead (1 = OPEN) to keep this file simple.
+  if (!ws) return false;
+  if (ws.readyState !== 1) return false;
+  try {
+    ws.send(JSON.stringify(obj));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function findWsById(id) {
