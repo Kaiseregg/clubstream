@@ -102,6 +102,26 @@ export default function Watch() {
     }
   }
 
+  async function onPlayClick() {
+    await ensurePlaybackGesture();
+    if (!startedRef.current) startJoinLoop("Tippe auf Play, um zu starten.");
+  }
+
+  async function requestFs() {
+    // Try Fullscreen API (desktop/Android). iOS Safari often requires native video fullscreen.
+    const el = document.querySelector(".viewerCard");
+    try {
+      if (el?.requestFullscreen) {
+        await el.requestFullscreen();
+      } else {
+        // Fallback to theater mode if fullscreen API not available
+        setTheater((v) => !v);
+      }
+    } catch {
+      setTheater((v) => !v);
+    }
+  }
+
   async function acceptOffer(offerSdp) {
     cleanupPc();
 
@@ -161,7 +181,15 @@ export default function Watch() {
       }
     };
 
-    await pc.setRemoteDescription({ type: "offer", sdp: offerSdp });
+    // The admin may (by mistake or older builds) send either:
+    // - a raw SDP string
+    // - an RTCSessionDescriptionInit ({type,sdp})
+    // If we blindly put an object into the sdp field, the browser tries to parse "[object Object]".
+    const offerDesc =
+      offerSdp && typeof offerSdp === "object"
+        ? offerSdp
+        : { type: "offer", sdp: String(offerSdp || "") };
+    await pc.setRemoteDescription(offerDesc);
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
@@ -207,6 +235,14 @@ export default function Watch() {
           return;
         }
 
+        // Auto-start once signaling is connected.
+        // This avoids cases where the Play overlay/button doesn't trigger on some browsers/devices.
+        if (!startedRef.current) {
+          setNote("Verbinde…");
+          startJoinLoop();
+          return;
+        }
+
         // On reconnect, re-announce join (common on mobile)
         if (startedRef.current && !hasVideoRef.current) {
           sendViewerJoin();
@@ -228,12 +264,6 @@ export default function Watch() {
     if (v) v.muted = muted;
   }, [muted]);
 
-  function onPlayClick() {
-    // User gesture: allow play() + kick off join loop
-    ensurePlaybackGesture();
-    startJoinLoop("Verbinde…");
-  }
-
   function toggleTheater() {
     setTheater((v) => !v);
     // When switching modes, keep playback alive
@@ -251,7 +281,21 @@ export default function Watch() {
                 Signaling: {sigOk ? "ok" : "…"} · <Link to={"/"}>← Zurück</Link>
               </div>
             </div>
-            <div className={"pill"}>Code: {code}</div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <div className={"pill"}>Code: {code}</div>
+              <button className={"btn"} onClick={onPlayClick}>
+                Play
+              </button>
+              <button className={"btn"} onClick={toggleTheater}>
+                Theater
+              </button>
+              <button className={"btn"} onClick={() => setMuted((m) => !m)}>
+                {muted ? "Ton an" : "Ton aus"}
+              </button>
+              <button className={"btn"} onClick={requestFs}>
+                Fullscreen
+              </button>
+            </div>
           </div>
 
           <div className={"videoWrap"}>

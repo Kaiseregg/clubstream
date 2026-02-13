@@ -202,11 +202,13 @@ const forceRelay = useMemo(() => {
 
   function onSigMsg(msg){
     if (msg.type === 'viewer-joined'){
-      createOfferForViewer(msg.viewerId).catch(e=>setErr(String(e?.message||e)))
+      // Viewer joined; viewer will initiate offer on Play.
+    }
+    if (msg.type === 'webrtc-offer'){
+      createAnswerForViewer(msg.from, msg.sdp).catch(e=>setErr(String(e?.message||e)))
     }
     if (msg.type === 'webrtc-answer'){
-      const pc = pcsRef.current.get(msg.from)
-      if (pc && msg.sdp) pc.setRemoteDescription(msg.sdp).catch(()=>{})
+      // Backward-compat: ignore (broadcaster answers now)
     }
     if (msg.type === 'webrtc-ice'){
       // Ignore our own ICE candidates if the signaling server echoes them.
@@ -238,7 +240,62 @@ const forceRelay = useMemo(() => {
     pcsRef.current.clear()
   }
 
-  async function createOfferForViewer(viewerId){
+  async function createAnswerForViewer(viewerId, offerSdp){
+    const sig = sigRef.current
+    if (!sig) return
+    const local = await ensureMedia()
+
+    // If same viewerId reconnects, close old pc first
+    const old = pcsRef.current.get(viewerId)
+    if (old){ try{ old.close() }catch{} pcsRef.current.delete(viewerId) }
+
+    const iceCfg = await getIceConfig()
+    const pc = new RTCPeerConnection({
+      ...iceCfg,
+      iceTransportPolicy: forceRelay ? 'relay' : 'all',
+    })
+    pcsRef.current.set(viewerId, pc)
+
+    local.getTracks().forEach(t=>pc.addTrack(t, local))
+
+    pc.onicecandidate = (ev) => {
+      if (!ev.candidate) return
+      sig.send({
+        type: 'webrtc-ice',
+        origin: 'broadcaster',
+        code,
+        to: viewerId,
+        candidate: ev.candidate,
+      })
+    }
+
+    pc.onconnectionstatechange = () => {
+      const st = pc.connectionState
+      if (st === 'failed' || st === 'disconnected' || st === 'closed'){
+        // cleanup
+        try{ pc.close() }catch{}
+        pcsRef.current.delete(viewerId)
+      }
+    }
+
+    const offerDesc = (typeof offerSdp === 'object')
+      ? offerSdp
+      : { type: 'offer', sdp: String(offerSdp || '') }
+
+    await pc.setRemoteDescription(offerDesc)
+    const answer = await pc.createAnswer()
+    await pc.setLocalDescription(answer)
+
+    sig.send({
+      type: 'webrtc-answer',
+      origin: 'broadcaster',
+      code,
+      to: viewerId,
+      sdp: pc.localDescription?.sdp || answer.sdp,
+    })
+  }
+
+async function createOfferForViewer(viewerId){
     const sig = sigRef.current
     if (!sig) return
     const local = await ensureMedia()
@@ -294,7 +351,8 @@ pcsRef.current.set(viewerId, pc)
           const o = await pc.createOffer({ iceRestart: true })
           o.sdp = preferH264(o.sdp)
           await pc.setLocalDescription(o)
-          sig.send({ type:'webrtc-offer', code, to: viewerId, sdp: pc.localDescription })
+          // Send SDP as string to avoid watcher parsing errors ([object Object])
+          sig.send({ type:'webrtc-offer', code, to: viewerId, sdp: pc.localDescription?.sdp || '' })
         }
       }catch{}
     }
@@ -303,7 +361,8 @@ pcsRef.current.set(viewerId, pc)
     const offer = await pc.createOffer({ iceRestart: true })
     offer.sdp = preferH264(offer.sdp)
     await pc.setLocalDescription(offer)
-    sig.send({ type:'webrtc-offer', code, to: viewerId, sdp: pc.localDescription })
+    // Send SDP as string to avoid watcher parsing errors ([object Object])
+    sig.send({ type:'webrtc-offer', code, to: viewerId, sdp: pc.localDescription?.sdp || '' })
   }
 
   async function uploadPauseImage(file){
