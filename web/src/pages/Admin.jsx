@@ -202,7 +202,10 @@ const forceRelay = useMemo(() => {
 
   function onSigMsg(msg){
     if (msg.type === 'viewer-joined'){
-      // Viewer joined; viewer will initiate offer on Play.
+      // Viewer joined; broadcaster must create an offer (viewer will answer).
+      // Without this, viewer stays on "Verbinde..." and we never see offer/answer/ice.
+      createOfferForViewer(msg.viewerId || msg.from)
+        .catch(e => setErr(String(e?.message || e)));
     }
     if (msg.type === 'webrtc-offer'){
       createAnswerForViewer(msg.from, msg.sdp).catch(e=>setErr(String(e?.message||e)))
