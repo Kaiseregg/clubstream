@@ -103,43 +103,14 @@ export default function Watch() {
   }
 
   async function onPlayClick() {
-    setError(null);
+    // User gesture: unlock playback on mobile
     await ensurePlaybackGesture();
 
-    // if signaling not ready yet, start join loop (will keep WS alive)
-    if (!sigOk || !sigRef.current) {
-      setStarted(true);
-      startedRef.current = true;
-      setNote('Verbinde…');
-      startJoinLoop();
-      return;
-    }
+    startedRef.current = true;
+    setNote("Verbinde…");
 
-    try {
-      setStarted(true);
-      startedRef.current = true;
-      setNote('Verbinde…');
-
-      const pc = await createViewerPc();
-
-      // recvonly negotiation
-      try { pc.addTransceiver('video', { direction: 'recvonly' }); } catch {}
-      try { pc.addTransceiver('audio', { direction: 'recvonly' }); } catch {}
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      sigRef.current.send({
-        type: 'webrtc-offer',
-        origin: 'viewer',
-        code,
-        sdp: pc.localDescription,
-      });
-    } catch (e) {
-      console.error(e);
-      setError('Verbindung fehlgeschlagen');
-      setNote('Fehler');
-    }
+    // Announce viewer + keep announcing until offer arrives
+    startJoinLoop();
   }
 
   async function createViewerPc() {
@@ -281,10 +252,6 @@ export default function Watch() {
           await acceptOffer(msg.sdp);
         }
 
-        if (msg?.type === "webrtc-answer" && (msg.sdp || msg?.sdp?.sdp)) {
-          await acceptAnswer(msg);
-        }
-
         // Trickle ICE from broadcaster
         if (msg?.type === "webrtc-ice" && msg.candidate && pcRef.current) {
           // Ignore our own echoed ICE (some signaling setups broadcast to sender)
@@ -415,17 +382,3 @@ export default function Watch() {
     </div>
   );
 }
-
-
-  async function acceptAnswer(answerMsg) {
-    try {
-      const pc = pcRef.current;
-      if (!pc) return;
-      const sdp = answerMsg?.sdp && typeof answerMsg.sdp === 'string' ? answerMsg.sdp : answerMsg?.sdp?.sdp;
-      if (!sdp) return;
-      await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
-      setNote('');
-    } catch (e) {
-      console.error('acceptAnswer failed', e);
-    }
-  }

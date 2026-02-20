@@ -105,6 +105,7 @@ wss.on('connection', (ws) => {
       if (room.hostId && room.hostId !== meta.id) {
         return safeSend(ws, { type: 'error', message: 'host-exists', code });
       }
+      meta.role = 'host';
       room.hostId = meta.id;
       safeSend(ws, { type: 'host-joined', code });
       for (const vid of room.viewers) safeSend(ws, { type: 'viewer-joined', code, viewerId: vid });
@@ -127,6 +128,7 @@ wss.on('connection', (ws) => {
       if (!room.viewers.has(meta.id) && room.viewers.size >= MAX_VIEWERS) {
         return safeSend(ws, { type: 'viewer-denied', code, reason: 'viewer-limit', max: MAX_VIEWERS });
       }
+      meta.role = 'viewer';
       room.viewers.add(meta.id);
       safeSend(ws, { type: 'viewer-joined-ok', code, viewerId: meta.id, hostPresent: !!room.hostId });
       if (room.match) safeSend(ws, { type: 'match-state', code, match: room.match, paused: room.paused, pauseImageUrl: room.pauseImageUrl });

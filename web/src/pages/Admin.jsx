@@ -201,12 +201,44 @@ const forceRelay = useMemo(() => {
   }
 
   function onSigMsg(msg){
+    if (!msg || !msg.type) return;
+
     if (msg.type === 'viewer-joined'){
-      // Viewer joined; broadcaster must create an offer (viewer will answer).
-      // Without this, viewer stays on "Verbinde..." and we never see offer/answer/ice.
-      createOfferForViewer(msg.viewerId || msg.from)
-        .catch(e => setErr(String(e?.message || e)));
+      const viewerId = msg.viewerId;
+      if (!viewerId) return;
+      console.log('[signal] viewer-joined', viewerId);
+      createOfferForViewer(viewerId).catch(err=>console.error('createOfferForViewer failed', err));
+      return;
     }
+
+    if (msg.type === 'viewer-left'){
+      const viewerId = msg.viewerId;
+      if (!viewerId) return;
+      console.log('[signal] viewer-left', viewerId);
+      const pc = pcsRef.current.get(viewerId);
+      if (pc){ try{ pc.close() }catch{} pcsRef.current.delete(viewerId) }
+      return;
+    }
+
+    if (msg.type === 'webrtc-answer'){
+      const viewerId = msg.from || msg.viewerId;
+      const pc = viewerId ? pcsRef.current.get(viewerId) : null;
+      const sdp = (typeof msg.sdp === 'string') ? msg.sdp : (msg?.sdp?.sdp || '');
+      if (!pc || !sdp) return;
+      console.log('[signal] answer from viewer -> host', viewerId);
+      pc.setRemoteDescription({ type:'answer', sdp }).catch(err=>console.error('setRemoteDescription(answer) failed', err));
+      return;
+    }
+
+    if (msg.type === 'webrtc-ice'){
+      const viewerId = msg.from || msg.viewerId || msg.to;
+      const pc = viewerId ? pcsRef.current.get(viewerId) : null;
+      if (pc && msg.candidate){
+        pc.addIceCandidate(msg.candidate).catch(()=>{});
+      }
+      return;
+    }
+  }
     if (msg.type === 'webrtc-offer'){
       createAnswerForViewer(msg.from, msg.sdp).catch(e=>setErr(String(e?.message||e)))
     }
@@ -242,35 +274,6 @@ const forceRelay = useMemo(() => {
     for (const pc of pcsRef.current.values()) { try{ pc.close() }catch{} }
     pcsRef.current.clear()
   }
-
-  async function createAnswerForViewer(viewerId, offerSdp){
-    const sig = sigRef.current
-    if (!sig) return
-    const local = await ensureMedia()
-
-    // If same viewerId reconnects, close old pc first
-    const old = pcsRef.current.get(viewerId)
-    if (old){ try{ old.close() }catch{} pcsRef.current.delete(viewerId) }
-
-    const iceCfg = await getIceConfig()
-    const pc = new RTCPeerConnection({
-      ...iceCfg,
-      iceTransportPolicy: forceRelay ? 'relay' : 'all',
-    })
-    pcsRef.current.set(viewerId, pc)
-
-    local.getTracks().forEach(t=>pc.addTrack(t, local))
-
-    pc.onicecandidate = (ev) => {
-      if (!ev.candidate) return
-      sig.send({
-        type: 'webrtc-ice',
-        origin: 'broadcaster',
-        code,
-        to: viewerId,
-        candidate: ev.candidate,
-      })
-    }
 
     pc.onconnectionstatechange = () => {
       const st = pc.connectionState
