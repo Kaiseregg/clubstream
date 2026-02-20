@@ -180,7 +180,15 @@ wss.on('connection', (ws) => {
     }
 
     if (type === 'webrtc-offer' || type === 'webrtc-answer' || type === 'webrtc-ice') {
-      const to = String(msg?.to || '').trim();
+      const code = String(msg?.code || '').trim();
+      let to = String(msg?.to || '').trim();
+
+      // Convenience routing: viewer -> current host if "to" missing
+      if (!to && code && meta.role === 'viewer') {
+        const room = rooms.get(code);
+        if (room?.hostId) to = room.hostId;
+      }
+
       if (!to) return;
       const target = findWsById(to);
       if (!target) return safeSend(ws, { type: 'error', message: 'peer-not-found', to });

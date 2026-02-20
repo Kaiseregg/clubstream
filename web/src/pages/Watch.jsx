@@ -103,9 +103,76 @@ export default function Watch() {
   }
 
   async function onPlayClick() {
+    setError(null);
     await ensurePlaybackGesture();
-    if (!startedRef.current) startJoinLoop("Tippe auf Play, um zu starten.");
+
+    // if signaling not ready yet, start join loop (will keep WS alive)
+    if (!sigOk || !sigRef.current) {
+      setStarted(true);
+      startedRef.current = true;
+      setNote('Verbinde…');
+      startJoinLoop();
+      return;
+    }
+
+    try {
+      setStarted(true);
+      startedRef.current = true;
+      setNote('Verbinde…');
+
+      const pc = await createViewerPc();
+
+      // recvonly negotiation
+      try { pc.addTransceiver('video', { direction: 'recvonly' }); } catch {}
+      try { pc.addTransceiver('audio', { direction: 'recvonly' }); } catch {}
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      sigRef.current.send({
+        type: 'webrtc-offer',
+        origin: 'viewer',
+        code,
+        sdp: pc.localDescription,
+      });
+    } catch (e) {
+      console.error(e);
+      setError('Verbindung fehlgeschlagen');
+      setNote('Fehler');
+    }
   }
+
+  async function createViewerPc() {
+    if (pcRef.current) return pcRef.current;
+
+    const cfg = await getIceConfig();
+    const pc = new RTCPeerConnection(cfg);
+    pcRef.current = pc;
+
+    pc.ontrack = (e) => {
+      if (e.streams && e.streams[0] && videoRef.current) {
+        videoRef.current.srcObject = e.streams[0];
+      }
+    };
+
+    pc.onicecandidate = (e) => {
+      if (!e.candidate) return;
+      sigRef.current?.send({
+        type: 'webrtc-ice',
+        origin: 'viewer',
+        code,
+        candidate: e.candidate,
+      });
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') setNote('');
+      if (pc.connectionState === 'failed') setError('Verbindung fehlgeschlagen');
+    };
+
+    return pc;
+  }
+
 
   async function requestFs() {
     // Try Fullscreen API (desktop/Android). iOS Safari often requires native video fullscreen.
@@ -212,6 +279,10 @@ export default function Watch() {
         if (msg?.type === "webrtc-offer" && msg.sdp) {
           broadcasterIdRef.current = msg.from || null;
           await acceptOffer(msg.sdp);
+        }
+
+        if (msg?.type === "webrtc-answer" && (msg.sdp || msg?.sdp?.sdp)) {
+          await acceptAnswer(msg);
         }
 
         // Trickle ICE from broadcaster
@@ -344,3 +415,17 @@ export default function Watch() {
     </div>
   );
 }
+
+
+  async function acceptAnswer(answerMsg) {
+    try {
+      const pc = pcRef.current;
+      if (!pc) return;
+      const sdp = answerMsg?.sdp && typeof answerMsg.sdp === 'string' ? answerMsg.sdp : answerMsg?.sdp?.sdp;
+      if (!sdp) return;
+      await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
+      setNote('');
+    } catch (e) {
+      console.error('acceptAnswer failed', e);
+    }
+  }
