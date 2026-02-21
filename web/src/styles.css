@@ -150,3 +150,56 @@ textarea.input{min-height:80px;resize:vertical}
   object-fit:contain;
   background:#000;
 }
+
+
+/* --- LiveKit UI helpers (added) --- */
+.page{min-height:100vh;display:flex;justify-content:center;padding:20px}
+.card{width:min(1100px,100%);background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.12);border-radius:18px;padding:18px}
+.topbar{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.actions{display:flex;gap:10px;align-items:center}
+.row{margin-top:12px}
+.field .label{font-weight:700;margin-bottom:6px}
+.inline{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.codebox{font-family:ui-monospace,Menlo,Consolas,monospace;background:rgba(0,0,0,.25);padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.12)}
+.input{background:rgba(0,0,0,.2);border:1px solid rgba(255,255,255,.15);color:#e6eefc;border-radius:10px;padding:8px 10px}
+.muted{opacity:.75}
+.small{font-size:12px}
+.error{margin-top:12px;background:rgba(255,0,0,.12);border:1px solid rgba(255,0,0,.35);padding:10px 12px;border-radius:12px}
+.videoWrap{margin-top:14px;position:relative;border-radius:16px;overflow:hidden;border:1px solid rgba(255,255,255,.12);background:#000}
+.video{width:100%;height:auto;display:block}
+.pauseOverlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55)}
+.pauseOverlay img{max-width:100%;max-height:100%;object-fit:contain;opacity:.95}
+.pauseText{position:absolute;bottom:14px;left:14px;font-weight:900;letter-spacing:.12em;background:rgba(0,0,0,.55);padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.18)}
+.viewerBadge{position:absolute;top:12px;right:12px;background:rgba(0,0,0,.55);padding:6px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.18);font-weight:700;font-size:12px}
+.logs{margin-top:10px;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.12);padding:10px;border-radius:12px;max-height:220px;overflow:auto;font-size:12px}
+.adminPanel{margin-top:18px;padding-top:16px;border-top:1px solid rgba(255,255,255,.12)}
+.reqList{margin-top:10px;display:flex;flex-direction:column;gap:10px}
+.reqCard{display:flex;justify-content:space-between;gap:10px;align-items:center;background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:10px 12px}
+.reqActions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.viewerList{margin:8px 0 0 18px}
+.watchPage{min-height:100vh;display:flex}
+.sidebar{width:280px;min-width:280px;padding:14px;border-right:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.25)}
+.watchPage.theater .sidebar{display:none}
+.main{flex:1;display:flex;align-items:center;justify-content:center;padding:14px}
+.brand{display:flex;gap:10px;align-items:center;margin-bottom:14px}
+.dot{width:10px;height:10px;border-radius:999px;background:#3aa3ff}
+.brandTitle{font-weight:900}
+.brandSub{opacity:.75;font-size:12px}
+.section{margin-top:12px;display:flex;flex-direction:column;gap:10px}
+.big{font-size:22px;font-weight:900}
+.tip{margin-top:14px;opacity:.75;font-size:12px}
+.cornerBadge{position:absolute;top:12px;left:12px;background:rgba(0,0,0,.55);padding:6px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.18);font-weight:700;font-size:12px}
+
+.scoreOverlay{position:absolute;top:12px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.18);border-radius:14px;padding:8px 10px;min-width:260px;max-width:90%;text-align:center}
+.scoreLine{display:flex;justify-content:center;gap:10px;align-items:center;flex-wrap:wrap}
+.scoreMeta{opacity:.85;font-size:12px;font-weight:700}
+.team{font-weight:800;max-width:40%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.score{font-weight:900;font-size:16px;padding:2px 8px;border-radius:10px;background:rgba(255,255,255,.08)}
+
+@media (max-width: 900px){
+  .watchPage{flex-direction:column}
+  .sidebar{width:100%;min-width:0;border-right:none;border-bottom:1px solid rgba(255,255,255,.12)}
+  .section{flex-direction:row;flex-wrap:wrap}
+  .main{padding-top:10px}
+}
+
