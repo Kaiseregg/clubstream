@@ -47,6 +47,8 @@ export default function Admin() {
 
   const [paused, setPaused] = useState(false);
   const [pauseImageUrl, setPauseImageUrl] = useState("");
+  const [videoDevices, setVideoDevices] = useState([]);
+  const [videoDeviceId, setVideoDeviceId] = useState("");
   const [maxViewers, setMaxViewers] = useState(40);
 
   const [viewerCount, setViewerCount] = useState(0);
@@ -69,12 +71,29 @@ export default function Admin() {
     return () => sub?.subscription?.unsubscribe?.();
   }, []);
 
-  // Fetch role/profile
+  
+  // Camera devices
+  useEffect(() => {
+    refreshVideoDevices();
+  }, []);
+// Fetch role/profile
   useEffect(() => {
     (async () => {
       if (!user?.id) return;
-      const { data, error } = await supabase.from("admin_profiles").select("role,max_viewers").eq("user_id", user.id).maybeSingle();
-      if (!error) {
+      let data = null;
+      {
+        const r1 = await supabase.from("admin_profiles").select("role,max_viewers").eq("user_id", user.id).maybeSingle();
+        if (!r1.error) {
+          data = r1.data;
+        } else {
+          const msg = String(r1.error.message || "");
+          if (msg.includes("max_viewers") && msg.includes("does not exist")) {
+            const r2 = await supabase.from("admin_profiles").select("role").eq("user_id", user.id).maybeSingle();
+            if (!r2.error) data = r2.data;
+          }
+        }
+      }
+      if (data) {
         setRole(String(data?.role || ""));
         if (data?.max_viewers) setMaxViewers(data.max_viewers);
       }
@@ -96,6 +115,24 @@ export default function Admin() {
       code,
       ts: Date.now(),
     };
+  }
+
+  async function refreshVideoDevices() {
+    try {
+      // On some browsers labels are empty until permission was granted
+      try {
+        const tmp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        tmp.getTracks().forEach((t) => t.stop());
+      } catch (_) {
+        // ignore
+      }
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const vids = devices.filter((d) => d.kind === "videoinput");
+      setVideoDevices(vids);
+      if (!videoDeviceId && vids.length) setVideoDeviceId(vids[0].deviceId);
+    } catch (e) {
+      log(`ERROR: ${e?.message || String(e)}`);
+    }
   }
 
   async function sendOverlay(toParticipantIdentity) {
@@ -149,15 +186,36 @@ export default function Admin() {
       await room.connect(import.meta.env.VITE_LIVEKIT_URL, tok.token);
 
       // Create local tracks (better quality default)
-      const tracks = await createLocalTracks({
-        audio: true,
-        video: {
-          facingMode: facingRef.current,
-          width: 1280,
-          height: 720,
-          frameRate: 30,
-        },
-      });
+            const videoConstraints = {};
+      if (videoDeviceId) {
+        videoConstraints.deviceId = { exact: videoDeviceId };
+      } else {
+        videoConstraints.facingMode = facingRef.current;
+      }
+
+      let tracks;
+      try {
+        tracks = await createLocalTracks({
+          audio: true,
+          video: {
+            ...videoConstraints,
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30, max: 30 },
+          },
+        });
+      } catch (e) {
+        // Fallback: some browsers/iOS can be picky with exact deviceId
+        tracks = await createLocalTracks({
+          audio: true,
+          video: {
+            facingMode: facingRef.current,
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30, max: 30 },
+          },
+        });
+      }
 
       // publish each track (compat)
       for (const t of tracks) {
@@ -242,7 +300,61 @@ export default function Admin() {
     }
   }
 
-  async function switchCamera() {
+    async function replaceVideoTrack(newVideoTrack) {
+    // Replace the currently published camera track with a new one (can be called during live streaming)
+    const room = roomRef.current;
+    if (!room || !newVideoTrack) return;
+
+    const oldPub = publishedVideoTrackRef.current;
+    try {
+      if (oldPub) {
+        try {
+          room.localParticipant.unpublishTrack(oldPub.track);
+        } catch (_) {}
+        try {
+          oldPub.track.stop();
+        } catch (_) {}
+        publishedVideoTrackRef.current = null;
+      }
+
+      const publication = await room.localParticipant.publishTrack(newVideoTrack, {
+        name: "camera",
+        source: "camera",
+      });
+      publishedVideoTrackRef.current = publication;
+
+      // Re-attach preview
+      if (localVideoRef.current) {
+        try {
+          localVideoRef.current.srcObject = null;
+        } catch (_) {}
+        try {
+          newVideoTrack.attach(localVideoRef.current);
+        } catch (_) {}
+      }
+    } catch (e) {
+      log(`ERROR: ${e?.message || String(e)}`);
+    }
+  }
+
+  async function onSelectCamera(deviceId) {
+    setVideoDeviceId(deviceId);
+
+    if (!deviceId) return;
+
+    // If we're live, immediately switch the published camera
+    if (status !== "live") return;
+    try {
+      const newVideo = await createLocalVideoTrack({ deviceId: { exact: deviceId } });
+      await replaceVideoTrack(newVideo);
+      log("Camera switched (deviceId)");
+    } catch (e) {
+      // Fallback: cycle facing mode
+      log(`ERROR: ${e?.message || String(e)}`);
+    }
+  }
+
+async function switchCamera() {
     try {
       if (status !== "live") {
         facingRef.current = facingRef.current === "user" ? "environment" : "user";
@@ -412,10 +524,26 @@ export default function Admin() {
                 <input className="input" type="number" min="1" max="500" value={maxViewers} onChange={(e)=>setMaxViewers(Number(e.target.value||0))} />
               </div>
 
+              <div className="row">
+                <label>Kamera</label>
+                <div className="rowInline" style={{ gap: 8, flexWrap: "wrap" }}>
+                  <select className="input" value={videoDeviceId} onChange={(e)=>onSelectCamera(e.target.value)} style={{ minWidth: 240 }}>
+                    <option value="">Auto (Standard)</option>
+                    {videoDevices.map((d, i) => (
+                      <option key={d.deviceId} value={d.deviceId}>{d.label || `Kamera ${i+1}`}</option>
+                    ))}
+                  </select>
+                  <button className="btn ghost" onClick={refreshVideoDevices}>Refresh</button>
+                  <button className="btn ghost" onClick={switchCamera} disabled={status!=="live"}>Wechseln</button>
+                </div>
+                <div className="muted small" style={{ marginTop: 6 }}>
+                  Tipp: Du kannst während dem Stream die Kamera wechseln.
+                </div>
+              </div>
+
               <div className="rowInline">
                 <button className="btn" onClick={start} disabled={status==="connecting"||status==="live"}>Start</button>
                 <button className="btn danger" onClick={stop} disabled={status!=="live"}>Stop</button>
-                <button className="btn ghost" onClick={switchCamera}>Kamera wechseln</button>
                 <button className="btn ghost" onClick={goFullscreen}>Fullscreen</button>
               </div>
 

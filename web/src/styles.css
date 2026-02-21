@@ -39,6 +39,7 @@ label{color:var(--muted);font-size:12px;}
 
 .input, select{width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--border);background:rgba(255,255,255,0.04);color:var(--text);outline:none;}
 .input:focus, select:focus{border-color:rgba(124,58,237,.7);}
+select option{color:#111;background:#fff;}
 
 .btn{background:var(--brand);border:none;color:white;padding:10px 14px;border-radius:12px;font-weight:700;cursor:pointer;}
 .btn:disabled{opacity:.5;cursor:not-allowed;}

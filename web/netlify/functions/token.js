@@ -81,14 +81,32 @@ exports.handler = async (event) => {
     if (role === "publisher") {
       if (!user) throw new Error("Publisher requires login (Bearer token)");
       const userId = user.id;
-
       // role check from admin_profiles (owner/admin/streamer)
-      const { data: prof, error: pErr } = await admin
-        .from("admin_profiles")
-        .select("role,max_viewers")
-        .eq("user_id", userId)
-        .maybeSingle();
-      if (pErr) throw pErr;
+      // NOTE: Some deployments may not have the max_viewers column yet. We fall back gracefully.
+      let prof = null;
+      {
+        const { data, error } = await admin
+          .from("admin_profiles")
+          .select("role,max_viewers")
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (!error) {
+          prof = data;
+        } else {
+          const msg = String(error.message || "");
+          if (msg.includes("max_viewers") && msg.includes("does not exist")) {
+            const { data: data2, error: error2 } = await admin
+              .from("admin_profiles")
+              .select("role")
+              .eq("user_id", userId)
+              .maybeSingle();
+            if (error2) throw error2;
+            prof = data2;
+          } else {
+            throw error;
+          }
+        }
+      }
 
       const r = String(prof?.role || "").toLowerCase();
       if (!["owner", "admin", "streamer"].includes(r)) throw new Error("Not allowed");
