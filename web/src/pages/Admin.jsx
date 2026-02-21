@@ -1,539 +1,543 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { supabase } from "../lib/supabase.js";
-import { Room, RoomEvent, createLocalTracks } from "livekit-client";
+import { Room, RoomEvent, Track, createLocalTracks } from "livekit-client";
+import { supabase } from "../lib/supabaseClient";
+import "../styles.css";
 
-const API_TOKEN_FN = "/.netlify/functions/livekit-token";
-const API_ROOM_FN = "/.netlify/functions/livekit-room";
-const API_UPLOAD_PAUSE = "/.netlify/functions/upload-pause-image";
-const API_LIST_REQ = "/.netlify/functions/list-requests";
-const API_APPROVE_REQ = "/.netlify/functions/approve-request";
-const API_DENY_REQ = "/.netlify/functions/deny-request";
-
-function randCode(){
-  const a = Math.random().toString(36).slice(2,6).toUpperCase();
-  const b = Math.random().toString(36).slice(2,6).toUpperCase();
+function mkCode() {
+  const a = Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+  const b = Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
   return `${a}-${b}`;
 }
 
-export default function Admin(){
-  const [role,setRole]=useState("streamer");
-  const [status,setStatus]=useState("idle"); // idle|connecting|live|error
-  const [err,setErr]=useState("");
-  const [code,setCode]=useState(()=> (localStorage.getItem("clubstream_code")||randCode()).toUpperCase());
-  const [codeInput,setCodeInput]=useState("");
-  const [paused,setPaused]=useState(false);
-  const [pauseUrl,setPauseUrl]=useState("");
-  const [viewerCount,setViewerCount]=useState(0);
-  const [viewerList,setViewerList]=useState([]);
-  const [showLogs,setShowLogs]=useState(false);
-  const [logs,setLogs]=useState([]);
-  const [requests,setRequests]=useState([]);
-  const [maxViewersInput,setMaxViewersInput]=useState({}); // requestId -> number
+async function postJSON(url, body, bearer) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  const txt = await res.text();
+  let data = null;
+  try { data = JSON.parse(txt); } catch { data = { raw: txt }; }
+  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+  return data;
+}
 
-  // Scoreboard (basic overlay, like older versions)
-  const [sport,setSport]=useState("Unihockey");
-  const [period,setPeriod]=useState("1/3");
-  const [teamA,setTeamA]=useState("Team A");
-  const [teamB,setTeamB]=useState("Team B");
-  const [scoreA,setScoreA]=useState(0);
-  const [scoreB,setScoreB]=useState(0);
+export default function Admin() {
+  // Auth / role
+  const [user, setUser] = useState(null);
+  const [role, setRole] = useState("");
+  const [tab, setTab] = useState("stream"); // stream | requests
+
+  // Stream state
+  const [code, setCode] = useState(mkCode);
+  const [codeInput, setCodeInput] = useState("");
+  const [status, setStatus] = useState("idle"); // idle | connecting | live | error
+  const [err, setErr] = useState("");
+  const [logs, setLogs] = useState([]);
+  const [sport, setSport] = useState("Unihockey");
+  const [periodMode, setPeriodMode] = useState("3"); // 2,3,4
+  const [period, setPeriod] = useState(1);
+  const [teamA, setTeamA] = useState("Team A");
+  const [teamB, setTeamB] = useState("Team B");
+  const [scoreA, setScoreA] = useState(0);
+  const [scoreB, setScoreB] = useState(0);
+
+  const [paused, setPaused] = useState(false);
+  const [pauseImageUrl, setPauseImageUrl] = useState("");
+  const [maxViewers, setMaxViewers] = useState(40);
+
+  const [viewerCount, setViewerCount] = useState(0);
+  const [viewerList, setViewerList] = useState([]);
+
+  const wrapRef = useRef(null);
   const localVideoRef = useRef(null);
-
   const roomRef = useRef(null);
-  const tracksRef = useRef([]); // local tracks for cleanup
+  const localVideoTrackRef = useRef(null);
+  const facingRef = useRef("user"); // user | environment
 
-  const enc = useMemo(()=>new TextEncoder(),[]);
+  const identity = useMemo(() => `admin-${Date.now()}-${Math.random().toString(16).slice(2)}`, []);
 
-  async function sendData(obj){
-    try{
-      const room = roomRef.current;
-      if(!room) return;
-      const bytes = enc.encode(JSON.stringify(obj));
-      await room.localParticipant.publishData(bytes,{reliable:true});
-    }catch{}
-  }
+  const log = (m) => setLogs((l) => [`${new Date().toLocaleTimeString()}  ${m}`, ...l].slice(0, 200));
 
-  async function sendState(){
-    await sendData({
-      type:"state",
-      paused,
-      pauseUrl,
-      scoreboard:{ sport, period, teamA, teamB, scoreA, scoreB },
-    });
-  }
+  // Auth bootstrap
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setUser(data?.user || null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => setUser(session?.user || null));
+    return () => sub?.subscription?.unsubscribe?.();
+  }, []);
 
-  const watchLink = useMemo(()=> `${window.location.origin}/watch/${code}`, [code]);
-
-  function log(msg){
-    const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
-    setLogs(prev => [line, ...prev].slice(0,200));
-    // keep console for debugging
-    // eslint-disable-next-line no-console
-    console.log(line);
-  }
-
-  async function loadRole(){
-    try{
-      if(!supabase) return;
-      const { data } = await supabase.auth.getSession();
-      const u = data?.session?.user;
-      if(!u) { setRole("streamer"); return; }
-      const { data: prof } = await supabase.from("admin_profiles").select("role").eq("user_id", u.id).maybeSingle();
-      const r = String(prof?.role||"streamer").toLowerCase();
-      setRole(["owner","admin","streamer"].includes(r)? r : "streamer");
-    }catch(e){
-      // ignore
-    }
-  }
-
-  async function refreshRequests(){
-    try{
-      if(!supabase) return;
-      const { data } = await supabase.auth.getSession();
-      const token = data?.session?.access_token;
-      if(!token) return;
-      const res = await fetch(API_LIST_REQ, { headers: { Authorization: `Bearer ${token}` } });
-      const js = await res.json();
-      if(js?.ok) setRequests(js.requests||[]);
-    }catch(e){
-      // ignore
-    }
-  }
-
-  useEffect(()=>{
-    loadRole();
-  },[]);
-
-  useEffect(()=>{
-    localStorage.setItem("clubstream_code", code);
-  },[code]);
-
-  // viewer count poll (only when live)
-  useEffect(()=>{
-    let t=null;
-    async function poll(){
-      try{
-        if(status!=="live") return;
-        if(!supabase) return;
-        const { data } = await supabase.auth.getSession();
-        const token = data?.session?.access_token;
-        if(!token) return;
-        const res = await fetch(`${API_ROOM_FN}?room=${encodeURIComponent(code)}`, { headers: { Authorization: `Bearer ${token}` } });
-        if(!res.ok){
-          // Avoid endless 400 spam if function is misconfigured
-          return;
-        }
-        const js = await res.json();
-        if(js?.counts){
-          setViewerCount(js.counts.viewers||0);
-          setViewerList(js.viewers||[]);
-        }
-      }catch(e){
-        // ignore
+  // Fetch role/profile
+  useEffect(() => {
+    (async () => {
+      if (!user?.id) return;
+      const { data, error } = await supabase.from("admin_profiles").select("role,max_viewers").eq("user_id", user.id).maybeSingle();
+      if (!error) {
+        setRole(String(data?.role || ""));
+        if (data?.max_viewers) setMaxViewers(data.max_viewers);
       }
-    }
-    if(status==="live"){
-      poll();
-      t = setInterval(poll, 2500);
-    }
-    return ()=> { if(t) clearInterval(t); };
-  },[status, code]);
+    })();
+  }, [user?.id]);
 
-  async function getToken(role){
-    if(!supabase) throw new Error("Supabase not configured");
-    const { data } = await supabase.auth.getSession();
-    const token = data?.session?.access_token;
-    const res = await fetch(API_TOKEN_FN, {
-      method:"POST",
-      headers: {
-        "Content-Type":"application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {})
-      },
-      body: JSON.stringify({ role, room: code })
-    });
-    const js = await res.json();
-    if(!res.ok) throw new Error(js?.error || "Token failed");
-    return js; // {token,url}
+  function currentOverlay() {
+    return {
+      type: "overlay",
+      sport,
+      periodMode: Number(periodMode),
+      period: Number(period),
+      teamA,
+      teamB,
+      scoreA: Number(scoreA),
+      scoreB: Number(scoreB),
+      paused,
+      pauseImageUrl,
+      code,
+      ts: Date.now(),
+    };
   }
 
-  async function start(){
-    setErr("");
-    setStatus("connecting");
-    try{
-      log(`START clicked (code ${code})`);
-      const { token, url } = await getToken("publisher");
+  async function sendOverlay(toParticipantIdentity) {
+    const room = roomRef.current;
+    if (!room) return;
+    const payload = new TextEncoder().encode(JSON.stringify(currentOverlay()));
+    await room.localParticipant.publishData(payload, { reliable: true, destinationIdentities: toParticipantIdentity ? [toParticipantIdentity] : undefined });
+  }
 
-      const room = new Room({
-        adaptiveStream: true,
-        dynacast: true,
-        publishDefaults: {
-          simulcast: true,
-          videoCodec: "vp8",
-        },
-      });
+  function refreshViewerState(room) {
+    const viewers = [];
+    room.remoteParticipants.forEach((p) => {
+      if (!String(p.identity || "").startsWith("admin-")) viewers.push({ identity: p.identity, name: p.name || "" });
+    });
+    setViewerCount(viewers.length);
+    setViewerList(viewers);
+  }
+
+  async function start() {
+    try {
+      setErr("");
+      setStatus("connecting");
+
+      const sess = await supabase.auth.getSession();
+      const bearer = sess?.data?.session?.access_token || null;
+      if (!bearer) throw new Error("Bitte einloggen (AdminLogin).");
+
+      log(`Start: room=${code} maxViewers=${maxViewers}`);
+
+      const tok = await postJSON("/.netlify/functions/token", { room: code, identity, role: "publisher", maxViewers }, bearer);
+
+      const room = new Room({ adaptiveStream: true, dynacast: true });
       roomRef.current = room;
 
-      room
-        .on(RoomEvent.Connected, () => log("LIVEKIT connected"))
-        .on(RoomEvent.Disconnected, () => log("LIVEKIT disconnected"))
-        .on(RoomEvent.ParticipantConnected, async () => {
-          log("Participant connected");
-          // send current pause/overlay state to late-joining viewers
-          await sendState();
-        })
-        .on(RoomEvent.ParticipantDisconnected, () => log("Participant disconnected"))
-        .on(RoomEvent.DataReceived, (payload, participant) => {
-          try{
-            const msg = new TextDecoder().decode(payload);
-            log(`Data from ${participant?.identity||"?"}: ${msg}`);
-            try{
-              const obj = JSON.parse(msg);
-              if(obj?.type === "hello") sendState();
-            }catch{}
-          }catch{}
-        });
+      room.on(RoomEvent.Connected, () => log("LIVEKIT connected"));
+      room.on(RoomEvent.Disconnected, () => log("LIVEKIT disconnected"));
 
-      await room.connect(url, token);
+      room.on(RoomEvent.ParticipantConnected, () => refreshViewerState(room));
+      room.on(RoomEvent.ParticipantDisconnected, () => refreshViewerState(room));
+
+      room.on(RoomEvent.DataReceived, async (payload, participant) => {
+        try {
+          const msg = JSON.parse(new TextDecoder().decode(payload));
+          if (msg?.type === "hello") {
+            // send current overlay to the joining viewer
+            await sendOverlay(participant?.identity);
+          }
+        } catch {}
+      });
+
+      await room.connect(import.meta.env.VITE_LIVEKIT_URL, tok.token);
+
+      // Create local tracks (better quality default)
+      const tracks = await createLocalTracks({
+        audio: true,
+        video: {
+          facingMode: facingRef.current,
+          width: 1280,
+          height: 720,
+          frameRate: 30,
+        },
+      });
+
+      // publish each track (compat)
+      for (const t of tracks) {
+        await room.localParticipant.publishTrack(t);
+        if (t.kind === "video") localVideoTrackRef.current = t;
+      }
+
+      // Local preview
+      const v = tracks.find((t) => t.kind === "video");
+      if (v && localVideoRef.current) {
+        v.attach(localVideoRef.current);
+        localVideoRef.current.muted = true;
+      }
+
+      refreshViewerState(room);
+      setStatus("live");
+      await sendOverlay(); // broadcast initial overlay
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || String(e));
+      setStatus("error");
+      log(`ERROR: ${e?.message || String(e)}`);
+    }
+  }
+
+  async function stop() {
+    try {
+      const room = roomRef.current;
+      if (room) {
+        // stop/unpublish
+        const pubs = room.localParticipant?.trackPublications;
+        if (pubs && typeof pubs.values === "function") {
+          for (const pub of pubs.values()) {
+            if (pub?.track) {
+              try { room.localParticipant.unpublishTrack(pub.track); } catch {}
+              try { pub.track.stop(); } catch {}
+              try { pub.track.detach?.(); } catch {}
+            }
+          }
+        }
+        try { await room.disconnect(); } catch {}
+      }
+      roomRef.current = null;
+      localVideoTrackRef.current = null;
+      if (localVideoRef.current) {
+        try { localVideoRef.current.srcObject = null; } catch {}
+      }
+      setViewerCount(0);
+      setViewerList([]);
+      setStatus("idle");
+      setErr("");
+      log("Stopped");
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || String(e));
+      setStatus("error");
+      log(`ERROR stop: ${e?.message || String(e)}`);
+    }
+  }
+
+  async function togglePause() {
+    const next = !paused;
+    setPaused(next);
+    // broadcast overlay after state update (next tick)
+    setTimeout(() => sendOverlay(), 0);
+  }
+
+  async function uploadPauseImage(file) {
+    const sess = await supabase.auth.getSession();
+    const bearer = sess?.data?.session?.access_token || null;
+    if (!bearer) throw new Error("Not logged in");
+    const base64 = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result || "").split(",")[1] || "");
+      r.onerror = reject;
+      r.readAsDataURL(file);
+    });
+    const out = await postJSON("/.netlify/functions/upload-pause-image", { room: code, base64, filename: file.name }, bearer);
+    if (out?.publicUrl) {
+      setPauseImageUrl(out.publicUrl);
+      setTimeout(() => sendOverlay(), 0);
+    }
+  }
+
+  async function switchCamera() {
+    try {
+      if (status !== "live") {
+        facingRef.current = facingRef.current === "user" ? "environment" : "user";
+        log(`Kamera gewählt: ${facingRef.current}`);
+        return;
+      }
+      const room = roomRef.current;
+      if (!room) return;
+
+      facingRef.current = facingRef.current === "user" ? "environment" : "user";
+      log(`Switch camera -> ${facingRef.current}`);
 
       const tracks = await createLocalTracks({
-        audio:true,
-        video:{
-          width:{ideal:1280},
-          height:{ideal:720},
-          frameRate:{ideal:30, max:30},
-        }
+        audio: false,
+        video: { facingMode: facingRef.current, width: 1280, height: 720, frameRate: 30 },
       });
-      tracksRef.current = tracks;
+      const newVideo = tracks.find((t) => t.kind === "video");
+      if (!newVideo) return;
 
-      // publish compat: publishTracks might not exist on some versions
-      if(room.localParticipant?.publishTracks){
-        await room.localParticipant.publishTracks(tracks);
-      }else{
-        for(const t of tracks){
-          await room.localParticipant.publishTrack(t);
+      // replace published video
+      const pubs = room.localParticipant?.trackPublications;
+      let oldPub = null;
+      if (pubs && typeof pubs.values === "function") {
+        for (const pub of pubs.values()) {
+          if (pub?.track?.kind === "video") oldPub = pub;
         }
       }
-      log("Published local tracks");
-
-      // local preview
-      const v = tracks.find(t => t.kind === "video");
-      if(v && localVideoRef.current){
-        v.attach(localVideoRef.current);
+      if (oldPub?.track) {
+        try { room.localParticipant.unpublishTrack(oldPub.track); } catch {}
+        try { oldPub.track.stop(); } catch {}
       }
 
-      setStatus("live");
-      setPaused(false);
-      setPauseUrl("");
+      await room.localParticipant.publishTrack(newVideo);
+      localVideoTrackRef.current = newVideo;
 
-      // initial state
-      await sendState();
-    }catch(e){
-      setStatus("error");
-      setErr(String(e?.message||e));
-      log(`ERROR start: ${String(e?.message||e)}`);
+      if (localVideoRef.current) {
+        newVideo.attach(localVideoRef.current);
+      }
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || String(e));
+      log(`ERROR camera: ${e?.message || String(e)}`);
     }
   }
 
-  async function stop(){
-    setErr("");
-    try{
-      log("STOP clicked");
-      setPaused(false);
-      setPauseUrl("");
+  async function goFullscreen() {
+    const el = wrapRef.current;
+    if (!el) return;
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else if (el.requestFullscreen) await el.requestFullscreen();
+    } catch {}
+  }
 
-      // notify viewers (best-effort)
-      try{
-        if(roomRef.current?.localParticipant){
-          const data1 = new TextEncoder().encode(JSON.stringify({ type:"pause", on:false }));
-          const data2 = new TextEncoder().encode(JSON.stringify({ type:"ended" }));
-          roomRef.current.localParticipant.publishData(data1, { reliable:true });
-          roomRef.current.localParticipant.publishData(data2, { reliable:true });
-        }
-      }catch{}
+  async function logout() {
+    await supabase.auth.signOut();
+    location.href = "/";
+  }
 
-      // cleanup tracks
-      try{
-        const tracks = tracksRef.current || [];
-        for(const t of tracks){
-          try{ t.stop(); }catch{}
-          try{ t.detach(); }catch{}
-        }
-      }catch{}
-      tracksRef.current = [];
+  // Requests (Owner/Admin)
+  const [reqs, setReqs] = useState([]);
+  const [reqErr, setReqErr] = useState("");
+  const [approveMax, setApproveMax] = useState(40);
 
-      // disconnect room
-      try{
-        if(roomRef.current){
-          roomRef.current.disconnect();
-        }
-      }catch{}
-      roomRef.current = null;
-
-      // clear preview
-      try{
-        if(localVideoRef.current) localVideoRef.current.srcObject = null;
-      }catch{}
-      setStatus("idle");
-    }catch(e){
-      setErr(String(e?.message||e));
-      setStatus("error");
+  async function loadRequests() {
+    try {
+      setReqErr("");
+      const sess = await supabase.auth.getSession();
+      const bearer = sess?.data?.session?.access_token || null;
+      if (!bearer) throw new Error("Not logged in");
+      const out = await fetch("/.netlify/functions/list-requests", { headers: { Authorization: `Bearer ${bearer}` } });
+      const data = await out.json();
+      if (!out.ok) throw new Error(data?.error || "Failed");
+      setReqs(data?.requests || []);
+    } catch (e) {
+      setReqErr(e?.message || String(e));
     }
   }
 
-  async function togglePause(){
-    try{
-      if(status!=="live" || !roomRef.current?.localParticipant) return;
-      const next = !paused;
-      setPaused(next);
-
-      const payload = next
-        ? { type:"pause", on:true, url: pauseUrl || "" }
-        : { type:"pause", on:false };
-
-      roomRef.current.localParticipant.publishData(
-        new TextEncoder().encode(JSON.stringify(payload)),
-        { reliable:true }
-      );
-      log(`Pause ${next ? "ON" : "OFF"} sent`);
-    }catch(e){
-      setErr(String(e?.message||e));
-    }
+  async function approveRequest(id) {
+    const sess = await supabase.auth.getSession();
+    const bearer = sess?.data?.session?.access_token || null;
+    if (!bearer) throw new Error("Not logged in");
+    await postJSON("/.netlify/functions/approve-request", { id, max_viewers: approveMax }, bearer);
+    await loadRequests();
   }
 
-  async function uploadPauseImage(file){
-    try{
-      if(!file) return;
-      if(!supabase) throw new Error("Supabase not configured");
-      const { data } = await supabase.auth.getSession();
-      const token = data?.session?.access_token;
-      if(!token) throw new Error("Not logged in");
-      const dataUrl = await new Promise((resolve,reject)=>{
-        const r = new FileReader();
-        r.onload = ()=> resolve(String(r.result||""));
-        r.onerror = reject;
-        r.readAsDataURL(file);
-      });
-      const res = await fetch(API_UPLOAD_PAUSE, {
-        method:"POST",
-        headers: { "Content-Type":"application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ code, dataUrl })
-      });
-      const js = await res.json();
-      if(!res.ok || !js?.ok) throw new Error(js?.error || "Upload failed");
-      setPauseUrl(js.url);
-      log("Pause image uploaded");
-    }catch(e){
-      setErr(String(e?.message||e));
-    }
+  async function denyRequest(id) {
+    const sess = await supabase.auth.getSession();
+    const bearer = sess?.data?.session?.access_token || null;
+    if (!bearer) throw new Error("Not logged in");
+    await postJSON("/.netlify/functions/deny-request", { id }, bearer);
+    await loadRequests();
   }
 
-  async function approveRequest(req){
-    try{
-      if(!supabase) return;
-      const { data } = await supabase.auth.getSession();
-      const token = data?.session?.access_token;
-      if(!token) return;
-      const maxViewers = Number(maxViewersInput[req.id]||0) || undefined;
-      const res = await fetch(API_APPROVE_REQ, {
-        method:"POST",
-        headers: { "Content-Type":"application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ id: req.id, max_viewers: maxViewers })
-      });
-      const js = await res.json();
-      if(!res.ok || !js?.ok) throw new Error(js?.error || "Approve failed");
-      await refreshRequests();
-      alert("Freigegeben");
-    }catch(e){
-      alert(String(e?.message||e));
-    }
-  }
-
-  async function denyRequest(req){
-    try{
-      if(!supabase) return;
-      const { data } = await supabase.auth.getSession();
-      const token = data?.session?.access_token;
-      if(!token) return;
-      const res = await fetch(API_DENY_REQ, {
-        method:"POST",
-        headers: { "Content-Type":"application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ id: req.id })
-      });
-      const js = await res.json();
-      if(!res.ok || !js?.ok) throw new Error(js?.error || "Deny failed");
-      await refreshRequests();
-      alert("Abgelehnt");
-    }catch(e){
-      alert(String(e?.message||e));
-    }
-  }
-
-  useEffect(()=>{
-    if(role==="owner" || role==="admin"){
-      refreshRequests();
-    }
-  },[role]);
+  useEffect(() => {
+    if (tab === "requests") loadRequests();
+  }, [tab]);
 
   return (
-    <div className="page">
-      <div className="card">
-        <div className="topbar">
-          <div>
-            <h2>Admin (Live)</h2>
-            <div className="muted">Signaling: ok • Status: <b>{status}</b> • Role: <b>{role}</b></div>
+    <div className="appShell">
+      <header className="topBar">
+        <div className="brand">ClubStream</div>
+        <div className="topBarRight">
+          <div className="pill">{role || "streamer"}</div>
+          <button className="btn ghost" onClick={logout}>Logout</button>
+        </div>
+      </header>
+
+      <nav className="tabs">
+        <button className={`tab ${tab==="stream"?"active":""}`} onClick={()=>setTab("stream")}>Stream</button>
+        {(role === "owner" || role === "admin") && (
+          <button className={`tab ${tab==="requests"?"active":""}`} onClick={()=>setTab("requests")}>Anfragen</button>
+        )}
+      </nav>
+
+      {tab === "requests" ? (
+        <main className="panel">
+          <h2>Anfragen</h2>
+          {reqErr ? <div className="alert">{reqErr}</div> : null}
+
+          <div className="row">
+            <label>Max. Zuschauer (bei Zustimmung)</label>
+            <input className="input" type="number" min="1" max="500" value={approveMax} onChange={(e)=>setApproveMax(Number(e.target.value||0))}/>
           </div>
-          <div className="actions">
-            <a className="btn" href="/watch/demo" onClick={(e)=>e.preventDefault()}>{viewerCount ? `Zuschauer: ${viewerCount}` : "Zuschauer"}</a>
+
+          <div className="cards">
+            {reqs.map((r)=>(
+              <div className="card" key={r.id}>
+                <div className="cardTitle">{r.name} • {r.email}</div>
+                <div className="muted">Plan: {r.plan || "-"} • Status: {r.status}</div>
+                <div className="cardActions">
+                  {r.status === "pending" ? (
+                    <>
+                      <button className="btn" onClick={()=>approveRequest(r.id)}>Zustimmen</button>
+                      <button className="btn danger" onClick={()=>denyRequest(r.id)}>Ablehnen</button>
+                    </>
+                  ) : (
+                    <div className="muted">Erledigt</div>
+                  )}
+                </div>
+              </div>
+            ))}
+            {reqs.length === 0 ? <div className="muted">Keine Anfragen.</div> : null}
           </div>
-        </div>
+        </main>
+      ) : (
+        <main className="panel">
+          <div className="grid2">
+            <section className="card">
+              <div className="cardTitleRow">
+                <h2>Live</h2>
+                <div className="viewerBadge">{viewerCount} Zuschauer</div>
+              </div>
 
-        <div className="row">
-          <div className="field">
-            <div className="label">Code</div>
-            <div className="inline">
-              <div className="codebox">{code}</div>
-              <button className="btn" onClick={()=>setCode(randCode())}>Neuer Code</button>
-              <input
-                className="input"
-                style={{width:140}}
-                value={codeInput}
-                onChange={(e)=>setCodeInput(e.target.value.toUpperCase())}
-                placeholder="Code manuell"
-                disabled={status==="live"}
-              />
-              <button
-                className="btn"
-                disabled={status==="live" || !codeInput.trim()}
-                onClick={()=>{ setCode(codeInput.trim().toUpperCase()); localStorage.setItem("clubstream_code", codeInput.trim().toUpperCase()); }}
-              >
-                Übernehmen
-              </button>
-              {status!=="live" ? (
-                <button className="btn primary" onClick={start}>Start</button>
-              ) : (
-                <button className="btn danger" onClick={stop}>Stop</button>
-              )}
-              <button className="btn" onClick={async ()=>{ await supabase.auth.signOut(); nav("/admin"); }}>
-                Logout
-              </button>
-              <button className="btn" onClick={()=>{
-                navigator.clipboard.writeText(watchLink);
-                log("Watch-Link kopiert");
-              }}>Watch-Link kopieren</button>
-            </div>
-            <div className="muted small">Zuschauer-Link: <a href={watchLink}>{watchLink}</a></div>
-          </div>
-        </div>
+              <div className="row">
+                <label>Matchcode</label>
+                <div className="rowInline">
+                  <input className="input" value={codeInput} placeholder={code} onChange={(e)=>setCodeInput(e.target.value)} />
+                  <button className="btn ghost" onClick={() => { if(codeInput.trim()) setCode(codeInput.trim().toUpperCase()); }}>Übernehmen</button>
+                  <button className="btn ghost" onClick={() => setCode(mkCode())} disabled={status !== "idle"}>Neu</button>
+                </div>
+              </div>
 
-        {/* Scoreboard overlay */}
-        <div className="row">
-          <div className="field">
-            <div className="label">Overlay / Resultat</div>
-            <div className="inline" style={{flexWrap:"wrap"}}>
-              <select className="input" value={sport} onChange={(e)=>setSport(e.target.value)}>
-                <option>Unihockey</option>
-                <option>Fussball</option>
-                <option>Eishockey</option>
-                <option>Basketball</option>
-              </select>
-              <select className="input" value={period} onChange={(e)=>setPeriod(e.target.value)}>
-                <option>1/3</option><option>2/3</option><option>3/3</option>
-                <option>1/4</option><option>2/4</option><option>3/4</option><option>4/4</option>
-                <option>1/2</option><option>2/2</option>
-              </select>
-              <input className="input" value={teamA} onChange={(e)=>setTeamA(e.target.value)} />
-              <button className="btn" onClick={()=>setScoreA(s=>Math.max(0,s-1))}>-</button>
-              <div className="pill">{scoreA}</div>
-              <button className="btn" onClick={()=>setScoreA(s=>s+1)}>+</button>
-              <input className="input" value={teamB} onChange={(e)=>setTeamB(e.target.value)} />
-              <button className="btn" onClick={()=>setScoreB(s=>Math.max(0,s-1))}>-</button>
-              <div className="pill">{scoreB}</div>
-              <button className="btn" onClick={()=>setScoreB(s=>s+1)}>+</button>
-            </div>
-            <div className="muted small">Wird live an alle Zuschauer gesendet.</div>
-          </div>
-        </div>
+              <div className="row">
+                <label>Max. Zuschauer (Room)</label>
+                <input className="input" type="number" min="1" max="500" value={maxViewers} onChange={(e)=>setMaxViewers(Number(e.target.value||0))} />
+              </div>
 
-        {/* Pause / Sponsor overlay */}
-        <div className="row">
-          <div className="field">
-            <div className="label">Pause / Sponsor</div>
-            <div className="inline">
-              <button className="btn" disabled={status!=="live"} onClick={togglePause}>
-                {paused ? "Pause aus" : "Pause an"}
-              </button>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(e)=>uploadPauseImage(e.target.files?.[0])}
-              />
-              {pauseUrl ? <a className="btn" href={pauseUrl} target="_blank" rel="noreferrer">Bild öffnen</a> : null}
-            </div>
-            <div className="muted small">Tipp: Bild hochladen → dann "Pause an" (Viewer sehen das Bild als Overlay).</div>
-          </div>
-        </div>
+              <div className="rowInline">
+                <button className="btn" onClick={start} disabled={status==="connecting"||status==="live"}>Start</button>
+                <button className="btn danger" onClick={stop} disabled={status!=="live"}>Stop</button>
+                <button className="btn ghost" onClick={switchCamera}>Kamera wechseln</button>
+                <button className="btn ghost" onClick={goFullscreen}>Fullscreen</button>
+              </div>
 
-        {err ? <div className="error">Fehler: {err}</div> : null}
+              <div className="muted small">
+                Watch-Link:{" "}
+                <a href={`/watch/${code}`}>{`${location.origin}/watch/${code}`}</a>{" "}
+                <button className="linkBtn" onClick={() => navigator.clipboard.writeText(`${location.origin}/watch/${code}`)}>kopieren</button>
+              </div>
 
-        <div className="videoWrap">
-          <video ref={localVideoRef} autoPlay playsInline muted className="video" />
-          {paused && pauseUrl ? (
-            <div className="pauseOverlay">
-              <img src={pauseUrl} alt="Pause" />
-              <div className="pauseText">PAUSE</div>
-            </div>
-          ) : null}
-          {!paused && viewerCount ? <div className="viewerBadge">{viewerCount} Zuschauer</div> : null}
-        </div>
+              {err ? <div className="alert">{err}</div> : null}
 
-        <div className="row">
-          <button className="btn" onClick={()=>setShowLogs(v=>!v)}>{showLogs ? "Logs ausblenden" : "Logs"}</button>
-        </div>
-        {showLogs ? (
-          <pre className="logs">{logs.join("\n")}</pre>
-        ) : null}
-
-        {(role==="owner" || role==="admin") ? (
-          <div className="adminPanel">
-            <h3>Streamer-Anfragen</h3>
-            <div className="muted small">Hier kannst du Zugänge freigeben/ablehnen. Optional: Max Zuschauer festlegen.</div>
-
-            <div className="reqList">
-              {requests.length===0 ? <div className="muted">Keine offenen Anfragen.</div> : null}
-              {requests.map(r=>(
-                <div key={r.id} className="reqCard">
-                  <div className="reqInfo">
-                    <div><b>{r.full_name}</b> • {r.email}</div>
-                    <div className="muted small">{r.club} • {r.plan} • {r.status}</div>
+              <div ref={wrapRef} className="videoWrap">
+                <video ref={localVideoRef} className="videoEl" autoPlay playsInline muted />
+                <div className="overlayTop">
+                  <div className="overlayLeft">
+                    <div className="overlaySport">{sport}</div>
+                    <div className="overlayPeriod">{period}/{periodMode}</div>
                   </div>
-                  <div className="reqActions">
-                    <input
-                      className="input"
-                      placeholder="Max Zuschauer"
-                      value={maxViewersInput[r.id] ?? ""}
-                      onChange={(e)=>setMaxViewersInput(prev=>({ ...prev, [r.id]: e.target.value }))}
-                      style={{ width: 130 }}
-                    />
-                    <button className="btn primary" onClick={()=>approveRequest(r)}>Freigeben</button>
-                    <button className="btn danger" onClick={()=>denyRequest(r)}>Ablehnen</button>
+                  <div className="overlayCenter">
+                    <div className="overlayTeams">
+                      <span className="team">{teamA}</span>
+                      <span className="score">{scoreA}:{scoreB}</span>
+                      <span className="team">{teamB}</span>
+                    </div>
                   </div>
                 </div>
-              ))}
-            </div>
 
-            <h3 style={{ marginTop: 18 }}>Zuschauer (aktueller Code)</h3>
-            <div className="muted small">LiveKit-Teilnehmerliste (Viewer).</div>
-            {viewerList.length===0 ? <div className="muted">Noch keine Zuschauer.</div> : (
-              <ul className="viewerList">
-                {viewerList.map(v=>(
-                  <li key={v.identity}>{v.name || v.identity}</li>
-                ))}
-              </ul>
-            )}
+                {paused && pauseImageUrl ? (
+                  <div className="pauseLayer">
+                    <img src={pauseImageUrl} alt="Pause" />
+                  </div>
+                ) : null}
+              </div>
+
+              <details className="details">
+                <summary>Viewer Liste</summary>
+                <div className="muted small">{viewerList.map(v=>v.identity).join(", ") || "—"}</div>
+              </details>
+
+              <details className="details">
+                <summary>Logs</summary>
+                <pre className="logBox">{logs.join("\n")}</pre>
+              </details>
+            </section>
+
+            <section className="card">
+              <h2>Scoreboard</h2>
+              <div className="row">
+                <label>Sport</label>
+                <select className="input" value={sport} onChange={(e)=>{setSport(e.target.value); setTimeout(()=>sendOverlay(),0);}}>
+                  <option>Unihockey</option>
+                  <option>Fussball</option>
+                  <option>Eishockey</option>
+                  <option>Handball</option>
+                </select>
+              </div>
+
+              <div className="row">
+                <label>Modus</label>
+                <select className="input" value={periodMode} onChange={(e)=>{setPeriodMode(e.target.value); setPeriod(1); setTimeout(()=>sendOverlay(),0);}}>
+                  <option value="2">2/2</option>
+                  <option value="3">3/3</option>
+                  <option value="4">4/4</option>
+                </select>
+              </div>
+
+              <div className="row">
+                <label>Periode</label>
+                <div className="rowInline">
+                  <button className="btn ghost" onClick={()=>{setPeriod((p)=>Math.max(1,p-1)); setTimeout(()=>sendOverlay(),0);}}>-</button>
+                  <div className="pill">{period}/{periodMode}</div>
+                  <button className="btn ghost" onClick={()=>{setPeriod((p)=>Math.min(Number(periodMode),p+1)); setTimeout(()=>sendOverlay(),0);}}>+</button>
+                </div>
+              </div>
+
+              <div className="row">
+                <label>Teams</label>
+                <div className="rowInline">
+                  <input className="input" value={teamA} onChange={(e)=>setTeamA(e.target.value)} onBlur={()=>sendOverlay()} />
+                  <input className="input" value={teamB} onChange={(e)=>setTeamB(e.target.value)} onBlur={()=>sendOverlay()} />
+                </div>
+              </div>
+
+              <div className="row">
+                <label>Resultat</label>
+                <div className="scoreGrid">
+                  <div>
+                    <div className="muted small">{teamA}</div>
+                    <div className="rowInline">
+                      <button className="btn ghost" onClick={()=>{setScoreA((s)=>Math.max(0,s-1)); setTimeout(()=>sendOverlay(),0);}}>-</button>
+                      <div className="pill big">{scoreA}</div>
+                      <button className="btn ghost" onClick={()=>{setScoreA((s)=>s+1); setTimeout(()=>sendOverlay(),0);}}>+</button>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="muted small">{teamB}</div>
+                    <div className="rowInline">
+                      <button className="btn ghost" onClick={()=>{setScoreB((s)=>Math.max(0,s-1)); setTimeout(()=>sendOverlay(),0);}}>-</button>
+                      <div className="pill big">{scoreB}</div>
+                      <button className="btn ghost" onClick={()=>{setScoreB((s)=>s+1); setTimeout(()=>sendOverlay(),0);}}>+</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <hr className="sep" />
+
+              <div className="rowInline">
+                <button className={`btn ${paused ? "danger" : ""}`} onClick={togglePause}>
+                  {paused ? "Pause AUS" : "Pause EIN"}
+                </button>
+                <label className="btn ghost fileBtn">
+                  Sponsorbild hochladen
+                  <input type="file" accept="image/*" onChange={(e)=>{ if(e.target.files?.[0]) uploadPauseImage(e.target.files[0]).catch((er)=>setErr(er.message)); }} />
+                </label>
+              </div>
+
+              <div className="muted small">Tipp: Zuschauer sehen Pause/Scoreboard auch im Fullscreen (Wrapper).</div>
+            </section>
           </div>
-        ) : null}
-
-      </div>
+        </main>
+      )}
     </div>
   );
 }

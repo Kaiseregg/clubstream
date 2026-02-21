@@ -14,8 +14,8 @@
     "react-router-dom": "^6.26.2",
     "@supabase/supabase-js": "^2.45.4",
     "nodemailer": "^6.9.16",
-    "livekit-client": "^2.7.0",
-    "livekit-server-sdk": "^2.7.0"
+    "livekit-client": "^2.7.3",
+    "livekit-server-sdk": "^2.7.3"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",

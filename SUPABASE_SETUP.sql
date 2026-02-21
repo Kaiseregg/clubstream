@@ -66,3 +66,8 @@ using (false);
 --
 -- alter table public.admin_profiles drop constraint if exists admin_profiles_role_check;
 -- alter table public.admin_profiles add constraint admin_profiles_role_check check (role in ('owner','admin','streamer'));
+
+
+-- Add max_viewers support
+alter table public.admin_requests add column if not exists max_viewers int;
+alter table public.admin_profiles add column if not exists max_viewers int;

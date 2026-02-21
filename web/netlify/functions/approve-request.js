@@ -37,18 +37,6 @@ async function requireOwnerOrAdmin(event, admin){
     .maybeSingle();
 
   if(pErr) throw pErr;
-
-    // Store subscription + limits in Auth user app_metadata (no DB migration needed)
-    const plan = String(request?.plan || '').toLowerCase();
-    const months = plan.includes('12') ? 12 : (plan.includes('6') ? 6 : 6);
-    const expires = new Date();
-    expires.setMonth(expires.getMonth() + months);
-    const mv = Number(max_viewers || 0) || undefined;
-    const meta = { plan: request?.plan || null, expires_at: expires.toISOString() };
-    if(mv) meta.max_viewers = mv;
-    const { error: umErr } = await admin.auth.admin.updateUserById(userId, { app_metadata: meta });
-    if(umErr) throw umErr;
-
   const role = String(prof?.role||"").toLowerCase();
   if(role !== "owner" && role !== "admin") throw new Error("Not allowed (owner/admin only)");
 }
@@ -87,6 +75,7 @@ exports.handler = async (event) => {
 
     const body = JSON.parse(event.body || "{}");
     const id = body.id;
+    const max_viewers = body.max_viewers;
     if(!id) throw new Error("Missing id");
 
     const { data: req, error: rErr } = await admin
@@ -132,25 +121,13 @@ exports.handler = async (event) => {
     // Role: streamer
     const { error: pErr } = await admin
       .from("admin_profiles")
-      .upsert({ user_id: userId, role: "streamer" }, { onConflict:"user_id" });
+      .upsert({ user_id: userId, role: "streamer", max_viewers: (max_viewers || null) }, { onConflict:"user_id" });
     if(pErr) throw pErr;
-
-    // Store subscription + limits in Auth user app_metadata (no DB migration needed)
-    const plan = String(request?.plan || '').toLowerCase();
-    const months = plan.includes('12') ? 12 : (plan.includes('6') ? 6 : 6);
-    const expires = new Date();
-    expires.setMonth(expires.getMonth() + months);
-    const mv = Number(max_viewers || 0) || undefined;
-    const meta = { plan: request?.plan || null, expires_at: expires.toISOString() };
-    if(mv) meta.max_viewers = mv;
-    const { error: umErr } = await admin.auth.admin.updateUserById(userId, { app_metadata: meta });
-    if(umErr) throw umErr;
-
 
     // Mark request approved
     const { error: upErr } = await admin
       .from("admin_requests")
-      .update({ status:"approved", approved_at: new Date().toISOString() })
+      .update({ status:"approved", approved_at: new Date().toISOString(), max_viewers: (max_viewers || null) })
       .eq("id", id);
     if(upErr) throw upErr;
 
