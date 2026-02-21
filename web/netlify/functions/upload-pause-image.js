@@ -49,10 +49,24 @@ exports.handler = async (event) => {
     if(event.httpMethod !== 'POST') return json(405,{error:'Method not allowed'});
     const admin = await requireRole(event);
     const body = JSON.parse(event.body||'{}');
-    const code = String(body.code||'').trim().toUpperCase();
+    const code = String((body.code ?? body.room) || '').trim().toUpperCase();
     if(!code) throw new Error('Missing code');
 
-    const { buf, contentType, ext } = parseDataUrl(body.dataUrl);
+    // Accept either a full data URL (data:image/png;base64,...) OR raw base64 string + filename
+    let buf, contentType, ext;
+    if(body.dataUrl){
+      ({ buf, contentType, ext } = parseDataUrl(body.dataUrl));
+    }else if(body.base64){
+      const b64 = String(body.base64||'').trim();
+      if(!b64) throw new Error('Missing image data');
+      buf = Buffer.from(b64, 'base64');
+      const filename = String(body.filename||'image.png');
+      const m = filename.toLowerCase().match(/\.(png|jpg|jpeg|webp)$/);
+      ext = m ? (m[1]==='jpeg' ? 'jpg' : m[1]) : 'png';
+      contentType = ext==='jpg' ? 'image/jpeg' : ext==='png' ? 'image/png' : ext==='webp' ? 'image/webp' : 'application/octet-stream';
+    }else{
+      throw new Error('Missing image data');
+    }
 
     const bucket = 'pause-images';
     // Auto-create bucket if missing (first install)

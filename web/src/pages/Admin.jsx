@@ -354,6 +354,14 @@ export default function Admin() {
     }
   }
 
+  async function applySelectedCamera() {
+    // Prefer explicit deviceId selection (PC + iPhone). If none, fall back to facing-mode toggle.
+    if (videoDeviceId) {
+      return onSelectCamera(videoDeviceId);
+    }
+    return switchCamera();
+  }
+
 async function switchCamera() {
     try {
       if (status !== "live") {
@@ -534,7 +542,7 @@ async function switchCamera() {
                     ))}
                   </select>
                   <button className="btn ghost" onClick={refreshVideoDevices}>Refresh</button>
-                  <button className="btn ghost" onClick={switchCamera} disabled={status!=="live"}>Wechseln</button>
+                  <button className="btn ghost" onClick={applySelectedCamera} disabled={status!=="live"}>Wechseln</button>
                 </div>
                 <div className="muted small" style={{ marginTop: 6 }}>
                   Tipp: Du kannst während dem Stream die Kamera wechseln.
