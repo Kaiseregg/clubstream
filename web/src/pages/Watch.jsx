@@ -45,6 +45,10 @@ export default function Watch() {
   const audioRef = useRef(null);
   const roomRef = useRef(null);
 
+  // iOS Safari often doesn't support the Fullscreen API on arbitrary elements.
+  // We use a CSS "fullscreen" fallback so overlays (score/pause) keep working.
+  const [fakeFs, setFakeFs] = useState(false);
+
   const identity = useMemo(() => `viewer-${Date.now()}-${Math.random().toString(16).slice(2)}`, []);
 
   function updateViewerCount(room) {
@@ -139,7 +143,19 @@ export default function Watch() {
       if (document.fullscreenElement) await document.exitFullscreen();
       else if (el.requestFullscreen) await el.requestFullscreen();
     } catch {}
+
+    // Fallback: if fullscreen wasn't entered, toggle CSS fullscreen
+    if (!document.fullscreenElement) {
+      setFakeFs((v) => !v);
+    }
   }
+
+  useEffect(() => {
+    document.body.style.overflow = fakeFs ? "hidden" : "";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [fakeFs]);
 
   useEffect(() => () => roomRef.current?.disconnect(), []);
 
@@ -170,7 +186,7 @@ export default function Watch() {
           <button className="btn ghost" onClick={fullscreen}>Fullscreen</button>
         </div>
 
-        <div ref={wrapRef} className="videoWrap large">
+        <div ref={wrapRef} className={"videoWrap large" + (fakeFs ? " fakeFs" : "")}> 
           <video ref={videoRef} className="videoEl" autoPlay playsInline />
           <audio ref={audioRef} autoPlay />
 

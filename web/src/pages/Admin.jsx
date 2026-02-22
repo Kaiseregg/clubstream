@@ -345,7 +345,13 @@ export default function Admin() {
     // If we're live, immediately switch the published camera
     if (status !== "live") return;
     try {
-      const newVideo = await createLocalVideoTrack({ deviceId: { exact: deviceId } });
+      // createLocalVideoTrack is not imported in this file; use createLocalTracks instead
+      const tracks = await createLocalTracks({
+        audio: false,
+        video: { deviceId }
+      });
+      const newVideo = (tracks || []).find(t => t.kind === Track.Kind.Video) || tracks?.[0];
+      if (!newVideo) throw new Error("No video track");
       await replaceVideoTrack(newVideo);
       log("Camera switched (deviceId)");
     } catch (e) {

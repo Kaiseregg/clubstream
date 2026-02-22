@@ -69,15 +69,20 @@ exports.handler = async (event) => {
     }
 
     const bucket = 'pause-images';
-    // Auto-create bucket if missing (first install)
+    // Ensure bucket exists AND is public (viewers are not logged in, so they must be able to fetch it)
     try{
-      const { data: buckets } = await admin.storage.listBuckets();
-      const exists = Array.isArray(buckets) && buckets.some(b=>b?.name===bucket);
-      if(!exists){
-        await admin.storage.createBucket(bucket, { public: true });
+      const { data: buckets, error: bErr } = await admin.storage.listBuckets();
+      if (bErr) throw bErr;
+      const existing = Array.isArray(buckets) ? buckets.find(b => b?.name === bucket) : null;
+      if (!existing) {
+        const { error: cErr } = await admin.storage.createBucket(bucket, { public: true });
+        if (cErr) throw cErr;
+      } else if (existing.public !== true) {
+        const { error: uErr } = await admin.storage.updateBucket(bucket, { public: true });
+        if (uErr) throw uErr;
       }
-    }catch(e){
-      // ignore if already exists / not supported
+    } catch (e) {
+      // If updateBucket isn't available, you can still set the bucket to Public once in Supabase Dashboard.
     }
 
     const path = `${code}/${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`;
